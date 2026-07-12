@@ -270,9 +270,10 @@ impl InputMethodEngine {
             Keysym::BACKSPACE => self.backspace_composing(),
             Keysym::DELETE => self.delete_composing(),
             Keysym::SPACE if self.mode.current() == InputMode::Alphabet => self.input_char(' '),
-            // Tab triggers conversion that bypasses the learning cache, so users
-            // can escape stale or unwanted learned entries (mozc binds Tab to a
-            // different conversion path — PredictAndConvert — in the same spirit).
+            // Tab triggers predictive conversion (mozc's PredictAndConvert):
+            // at the end of the buffer, learned readings that extend beyond
+            // what was typed are offered as candidates. Mid-buffer, Tab
+            // behaves exactly like Space (convert up to the cursor).
             Keysym::TAB => self.start_conversion(true),
             Keysym::SPACE | Keysym::DOWN => self.start_conversion(false),
             // While live conversion is displaying converted text, the arrow

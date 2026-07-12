@@ -661,11 +661,13 @@ fn test_live_conversion_entry_keeps_displayed_text_selected() {
 }
 
 #[test]
-fn test_live_conversion_space_moves_to_strongest_candidate() {
-    // Space during live conversion is an explicit conversion request: the
-    // selection moves to the strongest candidate — predictions included —
-    // rather than sticking to the displayed live text (which stays in the
-    // list). Only the arrow-key segment-selection entry keeps the display.
+fn test_live_conversion_tab_moves_to_strongest_candidate() {
+    // Tab during live conversion is an explicit predictive-conversion
+    // request: the selection moves to the strongest candidate — predictions
+    // included — rather than sticking to the displayed live text (which
+    // stays in the list). Only the arrow-key segment-selection entry keeps
+    // the display. (On this fork Space is exact-match only, so the
+    // prediction path is Tab.)
     let mut engine = InputMethodEngine::new();
     engine.live.enabled = true;
     let mut cache = LearningCache::new(LearningConfig::default());
@@ -678,11 +680,11 @@ fn test_live_conversion_space_moves_to_strongest_candidate() {
     // is deduplicated into the list rather than inserted at the top.
     engine.live.text = "アイ".to_string();
 
-    engine.process_key(&press_key(Keysym::SPACE));
+    engine.process_key(&press_key(Keysym::TAB));
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
     assert_eq!(
         engine.candidates().and_then(|c| c.selected_text()),
         Some("挨拶"),
-        "Space must select the predictive learning candidate (upstream behavior)"
+        "Tab must select the predictive learning candidate"
     );
 }
