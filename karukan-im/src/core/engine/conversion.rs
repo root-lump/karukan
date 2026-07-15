@@ -184,7 +184,21 @@ impl InputMethodEngine {
         // Flush any remaining romaji into composed_hiragana
         self.flush_romaji_to_composed();
 
-        let reading = self.input_buf.text.clone();
+        let full_reading = self.input_buf.text.clone();
+        let cursor = self.input_buf.cursor_pos;
+        let total_len = full_reading.chars().count();
+
+        // If cursor is in the middle, convert only up to cursor position;
+        // the rest becomes the unconverted tail.
+        let (reading, tail) = if cursor > 0 && cursor < total_len {
+            let r: String = full_reading.chars().take(cursor).collect();
+            let t: String = full_reading.chars().skip(cursor).collect();
+            (r, Some(t))
+        } else {
+            (full_reading, None)
+        };
+        self.conversion_tail = tail;
+        self.input_buf.text = reading.clone();
 
         // Save auto-suggest/live conversion result before clearing state.
         // This ensures the candidate that was displayed during input is preserved
@@ -225,17 +239,30 @@ impl InputMethodEngine {
             return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
         }
 
-        // Map AnnotatedCandidate → public Candidate. The two annotation
-        // slots are kept disjoint so descriptions never duplicate between the
-        // aux text and the candidate's right-side comment:
-        //   - `source_label` ← source.label() only (e.g. `🤖 AI`, `📚 辞書`)
-        //   - `description`  ← the per-candidate description only
-        //                      (e.g. `三点リーダ`, `[全]英大文字`)
-        let candidate_list = CandidateList::new(
+        let candidate_list = Self::to_candidate_list(candidates, &reading);
+        self.enter_conversion_state(&reading, candidate_list)
+    }
+
+    /// Map `AnnotatedCandidate`s → a `CandidateList` of public `Candidate`s.
+    ///
+    /// The two annotation slots are kept disjoint so descriptions never
+    /// duplicate between the aux text and the candidate's right-side comment:
+    ///   - `source_label` ← source.label() only (e.g. `🤖 AI`, `📚 辞書`)
+    ///   - `description` ← the per-candidate description only (e.g.
+    ///     `三点リーダ`, `[全]英大文字`)
+    ///
+    /// `fallback_reading` is used for candidates that didn't carry their own
+    /// override reading (i.e. exact matches, where the candidate's reading
+    /// equals the queried reading).
+    fn to_candidate_list(
+        candidates: Vec<AnnotatedCandidate>,
+        fallback_reading: &str,
+    ) -> CandidateList {
+        CandidateList::new(
             candidates
                 .into_iter()
                 .map(|ac| {
-                    let cand_reading = ac.reading.unwrap_or_else(|| reading.clone());
+                    let cand_reading = ac.reading.unwrap_or_else(|| fallback_reading.to_string());
                     let label = ac.source.label();
                     Candidate {
                         text: ac.text,
@@ -245,18 +272,41 @@ impl InputMethodEngine {
                     }
                 })
                 .collect(),
-        );
-        self.enter_conversion_state(&reading, candidate_list)
+        )
+    }
+
+    /// Build the Conversion-state preedit: confirmed segments (underlined),
+    /// the currently selected candidate (highlighted), already-converted
+    /// upcoming segments (underlined), then the unconverted tail
+    /// (underlined) if any. Caret sits right after the highlighted segment.
+    fn build_conversion_preedit(&self, selected_text: &str) -> Preedit {
+        let mut segments: Vec<PreeditSegment> = self
+            .confirmed_segments
+            .iter()
+            .map(|seg| PreeditSegment::underlined(&seg.text))
+            .collect();
+        let confirmed_len: usize = segments.iter().map(|s| s.text.chars().count()).sum();
+
+        segments.push(PreeditSegment::highlighted(selected_text));
+        for seg in &self.upcoming_segments {
+            segments.push(PreeditSegment::underlined(&seg.text));
+        }
+        if let Some(tail) = &self.conversion_tail {
+            segments.push(PreeditSegment::underlined(tail));
+        }
+        let caret = confirmed_len + selected_text.chars().count();
+
+        Preedit::from_segments(segments, caret)
     }
 
     /// Transition to Conversion state with the given reading and candidate list.
     ///
-    /// Sets up the preedit (highlighted selected text), updates the state, and
-    /// returns an EngineResult with preedit, candidates, and aux text actions.
+    /// Sets up the preedit (highlighted selected text + underlined tail if any),
+    /// updates the state, and returns an EngineResult with preedit, candidates,
+    /// and aux text actions.
     fn enter_conversion_state(&mut self, reading: &str, candidates: CandidateList) -> EngineResult {
         let selected_text = candidates.selected_text().unwrap_or(reading).to_string();
-
-        let preedit = Preedit::with_text_highlighted(&selected_text);
+        let preedit = self.build_conversion_preedit(&selected_text);
 
         self.state = InputState::Conversion {
             preedit: preedit.clone(),
@@ -335,6 +385,28 @@ impl InputMethodEngine {
         num_candidates: usize,
         skip_learning: bool,
     ) -> Vec<AnnotatedCandidate> {
+        self.build_conversion_candidates_impl(reading, num_candidates, skip_learning, true)
+    }
+
+    /// Like [`build_conversion_candidates`] but restricted to exact-match
+    /// learning candidates only (see [`lookup_learning_candidates_exact`]).
+    /// Used by segment range navigation so a longer predictive suggestion
+    /// never becomes the default selection for a shorter reading.
+    pub(super) fn build_conversion_candidates_exact_learning(
+        &mut self,
+        reading: &str,
+        num_candidates: usize,
+    ) -> Vec<AnnotatedCandidate> {
+        self.build_conversion_candidates_impl(reading, num_candidates, false, false)
+    }
+
+    fn build_conversion_candidates_impl(
+        &mut self,
+        reading: &str,
+        num_candidates: usize,
+        skip_learning: bool,
+        include_predictive_learning: bool,
+    ) -> Vec<AnnotatedCandidate> {
         // Try to initialize the kanji converter, but don't bail out if it
         // fails — symbol-only inputs (e.g. `。。。`) don't need the model and
         // we still want to produce dictionary, rewriter, and fallback candidates.
@@ -358,7 +430,12 @@ impl InputMethodEngine {
         //    Force-inserted so they win against duplicate text from later sources.
         //    Skipped when the caller asks for a learning-free conversion (Tab key).
         if !skip_learning {
-            for c in self.lookup_learning_candidates(reading) {
+            let learning_candidates = if include_predictive_learning {
+                self.lookup_learning_candidates(reading)
+            } else {
+                self.lookup_learning_candidates_exact(reading)
+            };
+            for c in learning_candidates {
                 // Exact matches have reading == input reading; use None to avoid redundancy
                 let cand_reading = c.reading.filter(|r| r != reading);
                 builder.push_force(
@@ -478,6 +555,26 @@ impl InputMethodEngine {
     ///
     /// Returns candidates from the learning cache suitable for auto-suggest display.
     pub(super) fn lookup_learning_candidates(&self, reading: &str) -> Vec<Candidate> {
+        self.lookup_learning_candidates_impl(reading, true)
+    }
+
+    /// Like [`lookup_learning_candidates`] but restricted to exact matches
+    /// (`reading` == the cached full reading).
+    ///
+    /// Used by segment range navigation (shrink/expand/advance/return): a
+    /// predictive (prefix) match's surface corresponds to a *longer* reading
+    /// than what's currently selected, so auto-selecting it as the default
+    /// candidate would silently commit characters the user never typed when
+    /// the segment is confirmed.
+    pub(super) fn lookup_learning_candidates_exact(&self, reading: &str) -> Vec<Candidate> {
+        self.lookup_learning_candidates_impl(reading, false)
+    }
+
+    fn lookup_learning_candidates_impl(
+        &self,
+        reading: &str,
+        include_predictive: bool,
+    ) -> Vec<Candidate> {
         let Some(cache) = &self.learning else {
             return vec![];
         };
@@ -498,6 +595,10 @@ impl InputMethodEngine {
                     description: None,
                 });
             }
+        }
+
+        if !include_predictive {
+            return candidates;
         }
 
         // Prefix match (predictive)
@@ -580,6 +681,10 @@ impl InputMethodEngine {
             Keysym::PAGE_DOWN => self.next_candidate_page(),
             Keysym::PAGE_UP => self.prev_candidate_page(),
             Keysym::BACKSPACE => self.backspace_conversion(),
+            Keysym::LEFT if key.modifiers.shift_key => self.shrink_conversion_range(),
+            Keysym::RIGHT if key.modifiers.shift_key => self.expand_conversion_range(),
+            Keysym::RIGHT => self.advance_to_next_segment(),
+            Keysym::LEFT => self.return_to_prev_segment(),
             _ => {
                 // Ctrl+N / Ctrl+P: emacs-style candidate navigation
                 if key.modifiers.control_key && !key.modifiers.alt_key {
@@ -627,39 +732,122 @@ impl InputMethodEngine {
         }
     }
 
-    /// Record the committed conversion in the learning cache and reset to Empty state.
+    /// Record learning for all `confirmed_segments` and `upcoming_segments`
+    /// (from segment navigation), then build and return the full commit
+    /// text — confirmed segments, `current_text`, then upcoming segments,
+    /// concatenated in order — clearing both segment lists in the process.
     ///
-    /// Skips learning when the buffer is a `:shortcode` query — the
-    /// reading would be e.g. `:smile`, which isn't a hiragana key
-    /// and would corrupt the kana-keyed learning cache.
-    fn finish_conversion(&mut self, text: &str, reading: &Option<String>) {
-        if self.mode.current() != InputMode::Emoji
-            && let Some(reading) = reading
-        {
-            self.record_learning(reading, text);
+    /// Skips recording when in Emoji mode: shortcode readings (e.g.
+    /// `:smile`) aren't hiragana keys and would corrupt the kana-keyed
+    /// learning cache.
+    fn finalize_confirmed_segments(&mut self, current_text: &str) -> String {
+        if self.mode.current() != InputMode::Emoji {
+            let pairs: Vec<_> = self
+                .confirmed_segments
+                .iter()
+                .chain(self.upcoming_segments.iter())
+                .map(|seg| (seg.reading.clone(), seg.text.clone()))
+                .collect();
+            for (r, t) in &pairs {
+                self.record_learning(r, t);
+            }
         }
 
-        self.state = InputState::Empty;
-        self.input_buf.text.clear();
-        self.mode.exit_temporary();
+        let mut commit_text = String::new();
+        for seg in &self.confirmed_segments {
+            commit_text.push_str(&seg.text);
+        }
+        commit_text.push_str(current_text);
+        for seg in &self.upcoming_segments {
+            commit_text.push_str(&seg.text);
+        }
+        self.confirmed_segments.clear();
+        self.upcoming_segments.clear();
+        commit_text
     }
 
-    /// Commit the current conversion
+    /// Commit the current conversion (and any confirmed segments).
     fn commit_conversion(&mut self) -> EngineResult {
         let Some((text, reading)) = self.selected_conversion_info() else {
             return EngineResult::not_consumed();
         };
 
-        if text.is_empty() {
+        if text.is_empty() && self.confirmed_segments.is_empty() {
             return EngineResult::consumed();
         }
 
-        self.finish_conversion(&text, &reading);
+        // A tail (unconverted portion) means the session isn't over: commit
+        // the converted part and return to Composing with the tail.
+        if let Some(tail) = self.conversion_tail.take() {
+            return self.commit_and_resume_tail(&text, &reading, tail);
+        }
+
+        let commit_text = self.finish_conversion(&text, &reading);
 
         EngineResult::consumed()
             .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
-            .with_action(EngineAction::Commit(text))
+            .with_action(EngineAction::Commit(commit_text))
+    }
+
+    /// Record learning for the selected text and any confirmed/upcoming
+    /// segments, build and return the full commit text, and reset to the
+    /// Empty state.
+    ///
+    /// Skips learning when the buffer is a `:shortcode` query — the
+    /// reading would be e.g. `:smile`, which isn't a hiragana key
+    /// and would corrupt the kana-keyed learning cache.
+    fn finish_conversion(&mut self, text: &str, reading: &Option<String>) -> String {
+        if self.mode.current() != InputMode::Emoji
+            && let Some(reading) = reading
+        {
+            self.record_learning(reading, text);
+        }
+        let commit_text = self.finalize_confirmed_segments(text);
+
+        self.state = InputState::Empty;
+        self.input_buf.text.clear();
+        self.mode.exit_temporary();
+        commit_text
+    }
+
+    /// Commit the converted segments and re-enter Composing with the
+    /// unconverted `tail` reading (partial conversion via cursor split or
+    /// range shrink). Learning is recorded like a normal finish, but the
+    /// engine resumes a composing session instead of resetting to Empty.
+    fn commit_and_resume_tail(
+        &mut self,
+        text: &str,
+        reading: &Option<String>,
+        tail: String,
+    ) -> EngineResult {
+        if self.mode.current() != InputMode::Emoji
+            && let Some(reading) = reading
+        {
+            self.record_learning(reading, text);
+        }
+        let commit_text = self.finalize_confirmed_segments(text);
+
+        self.state = InputState::Empty;
+        self.input_buf.text = tail;
+        self.input_buf.cursor_pos = self.input_buf.text.chars().count();
+        self.converters.romaji.reset();
+        for ch in self.input_buf.text.chars() {
+            self.converters.romaji.push(ch);
+        }
+        self.live.text.clear();
+        self.chunks.clear();
+
+        let preedit = self.set_composing_state();
+        let mut result = EngineResult::consumed()
+            .with_action(EngineAction::Commit(commit_text))
+            .with_action(EngineAction::HideCandidates)
+            .with_action(EngineAction::UpdatePreedit(preedit))
+            .with_action(EngineAction::UpdateAuxText(self.format_aux_composing()));
+
+        let refresh = self.refresh_input_state();
+        result.actions.extend(refresh.actions);
+        result
     }
 
     /// Commit current conversion and then process a new character as fresh input
@@ -668,14 +856,13 @@ impl InputMethodEngine {
             return EngineResult::not_consumed();
         };
 
-        self.finish_conversion(&text, &reading);
+        self.conversion_tail = None;
+        let commit_text = self.finish_conversion(&text, &reading);
 
-        // Start new input with the character
         let new_input_result = self.start_input(ch);
 
-        // Combine: commit first, then new input actions
         let mut result = EngineResult::consumed()
-            .with_action(EngineAction::Commit(text))
+            .with_action(EngineAction::Commit(commit_text))
             .with_action(EngineAction::HideCandidates);
         result.actions.extend(new_input_result.actions);
         result
@@ -686,7 +873,20 @@ impl InputMethodEngine {
         if !matches!(self.state, InputState::Conversion { .. }) {
             return EngineResult::not_consumed();
         }
-        let reading = self.input_buf.text.clone();
+        // Restore full reading including confirmed/upcoming segments and tail
+        let mut reading = String::new();
+        for seg in &self.confirmed_segments {
+            reading.push_str(&seg.reading);
+        }
+        self.confirmed_segments.clear();
+        reading.push_str(&self.input_buf.text);
+        for seg in &self.upcoming_segments {
+            reading.push_str(&seg.reading);
+        }
+        self.upcoming_segments.clear();
+        if let Some(tail) = self.conversion_tail.take() {
+            reading.push_str(&tail);
+        }
 
         if reading.is_empty() {
             self.state = InputState::Empty;
@@ -777,19 +977,21 @@ impl InputMethodEngine {
             (text, reading)
         };
 
-        // Record learning before committing
+        // Record learning for the current segment
         if let Some(reading) = &reading {
             self.record_learning(reading, &selected_text);
         }
 
-        // Commit immediately after digit selection
+        // Record learning for confirmed segments and build the full commit text.
+        let commit_text = self.finalize_confirmed_segments(&selected_text);
+        self.conversion_tail = None;
 
         self.state = InputState::Empty;
 
         EngineResult::consumed()
             .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
-            .with_action(EngineAction::Commit(selected_text))
+            .with_action(EngineAction::Commit(commit_text))
     }
 
     /// Update preedit after candidate selection change
@@ -798,7 +1000,7 @@ impl InputMethodEngine {
         selected_text: &str,
         candidates: &CandidateList,
     ) -> EngineResult {
-        let preedit = Preedit::with_text_highlighted(selected_text);
+        let preedit = self.build_conversion_preedit(selected_text);
 
         if let Some(p) = self.state.preedit_mut() {
             *p = preedit.clone();
@@ -821,5 +1023,177 @@ impl InputMethodEngine {
     fn backspace_conversion(&mut self) -> EngineResult {
         // Return to hiragana mode with the reading
         self.cancel_conversion()
+    }
+
+    /// Convert the given reading directly (without cursor-split or romaji flush).
+    ///
+    /// Used by segment navigation (Left/Right arrows) where `conversion_tail`
+    /// is already set by the caller and must not be overwritten.
+    fn convert_reading(&mut self, reading: &str) -> EngineResult {
+        self.convert_reading_preselect(reading, None)
+    }
+
+    /// Like [`convert_reading`], but re-selects `preselect` as the default
+    /// candidate when given. Used when re-entering a segment the user
+    /// already converted (Left/Right navigation) so their previous choice
+    /// survives the round trip; if the rebuilt candidate list no longer
+    /// contains it, it is inserted at the top.
+    fn convert_reading_preselect(
+        &mut self,
+        reading: &str,
+        preselect: Option<&str>,
+    ) -> EngineResult {
+        self.input_buf.text = reading.to_string();
+        self.input_buf.cursor_pos = 0;
+
+        if reading.is_empty() {
+            return EngineResult::consumed();
+        }
+
+        let mut candidates =
+            self.build_conversion_candidates_exact_learning(reading, self.config.num_candidates);
+
+        if let Some(preferred) = preselect
+            && !candidates.iter().any(|c| c.text == preferred)
+        {
+            candidates.insert(
+                0,
+                AnnotatedCandidate::new(preferred, CandidateSource::Model),
+            );
+        }
+
+        if candidates.is_empty() {
+            let preedit = Preedit::with_text_underlined(reading);
+            self.state = InputState::Composing {
+                preedit: preedit.clone(),
+                romaji_buffer: String::new(),
+            };
+            return EngineResult::consumed().with_action(EngineAction::UpdatePreedit(preedit));
+        }
+
+        let mut candidate_list = Self::to_candidate_list(candidates, reading);
+        if let Some(preferred) = preselect
+            && let Some(idx) = candidate_list
+                .candidates()
+                .iter()
+                .position(|c| c.text == preferred)
+        {
+            candidate_list.select(idx);
+        }
+        self.enter_conversion_state(reading, candidate_list)
+    }
+
+    /// Confirm current segment and move right (Right arrow): re-enter the
+    /// next already-converted segment if one exists (created by a previous
+    /// Left), otherwise start converting the raw tail.
+    fn advance_to_next_segment(&mut self) -> EngineResult {
+        let has_upcoming = !self.upcoming_segments.is_empty();
+        let has_tail = self.conversion_tail.as_ref().is_some_and(|t| !t.is_empty());
+        if !has_upcoming && !has_tail {
+            return EngineResult::consumed();
+        }
+
+        let Some((text, reading)) = self.selected_conversion_info() else {
+            return EngineResult::not_consumed();
+        };
+
+        let seg_reading = reading.unwrap_or_else(|| self.input_buf.text.clone());
+        self.confirmed_segments.push(ConvertedSegment {
+            text,
+            reading: seg_reading,
+        });
+
+        if has_upcoming {
+            let next = self.upcoming_segments.remove(0);
+            self.convert_reading_preselect(&next.reading, Some(&next.text))
+        } else {
+            let tail = self.conversion_tail.take().unwrap_or_default();
+            self.convert_reading(&tail)
+        }
+    }
+
+    /// Go back to the previous segment (Left arrow). The current segment's
+    /// conversion is kept in `upcoming_segments` (not dissolved back to raw
+    /// kana) so it survives the round trip.
+    fn return_to_prev_segment(&mut self) -> EngineResult {
+        let Some(prev) = self.confirmed_segments.pop() else {
+            return EngineResult::consumed();
+        };
+
+        if let Some((text, reading)) = self.selected_conversion_info() {
+            let seg_reading = reading.unwrap_or_else(|| self.input_buf.text.clone());
+            self.upcoming_segments.insert(
+                0,
+                ConvertedSegment {
+                    text,
+                    reading: seg_reading,
+                },
+            );
+        }
+
+        self.convert_reading_preselect(&prev.reading, Some(&prev.text))
+    }
+
+    /// Dissolve `upcoming_segments` back into the raw `conversion_tail`
+    /// (readings only). Called before Shift+Left/Right range adjustments:
+    /// moving the segment boundary invalidates the downstream conversions,
+    /// so they revert to kana and get re-converted on demand.
+    fn dissolve_upcoming_into_tail(&mut self) {
+        if self.upcoming_segments.is_empty() {
+            return;
+        }
+        let mut readings = String::new();
+        for seg in &self.upcoming_segments {
+            readings.push_str(&seg.reading);
+        }
+        self.upcoming_segments.clear();
+        if let Some(tail) = &self.conversion_tail {
+            readings.push_str(tail);
+        }
+        self.conversion_tail = Some(readings);
+    }
+
+    /// Shrink the conversion range by 1 character (Shift+Left).
+    ///
+    /// Moves the last character of the current reading into the front of
+    /// `conversion_tail`, then re-runs conversion on the shortened reading.
+    fn shrink_conversion_range(&mut self) -> EngineResult {
+        let reading = self.input_buf.text.clone();
+        let char_count = reading.chars().count();
+        if char_count <= 1 {
+            return EngineResult::consumed();
+        }
+        self.dissolve_upcoming_into_tail();
+
+        let new_reading: String = reading.chars().take(char_count - 1).collect();
+        let moved_char: String = reading.chars().skip(char_count - 1).collect();
+
+        let tail = self.conversion_tail.take().unwrap_or_default();
+        self.conversion_tail = Some(format!("{}{}", moved_char, tail));
+        self.convert_reading(&new_reading)
+    }
+
+    /// Expand the conversion range by 1 character (Shift+Right).
+    ///
+    /// Takes the first character from `conversion_tail` and appends it to the
+    /// current reading, then re-runs conversion on the extended reading.
+    fn expand_conversion_range(&mut self) -> EngineResult {
+        self.dissolve_upcoming_into_tail();
+        let tail = match self.conversion_tail.as_ref() {
+            Some(t) if !t.is_empty() => t.clone(),
+            _ => return EngineResult::consumed(),
+        };
+
+        let first_char: String = tail.chars().take(1).collect();
+        let remaining: String = tail.chars().skip(1).collect();
+
+        if remaining.is_empty() {
+            self.conversion_tail = None;
+        } else {
+            self.conversion_tail = Some(remaining);
+        }
+
+        let new_reading = format!("{}{}", self.input_buf.text, first_char);
+        self.convert_reading(&new_reading)
     }
 }

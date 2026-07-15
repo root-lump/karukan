@@ -28,7 +28,7 @@ use tracing::{debug, trace};
 
 use super::candidate::{Candidate, CandidateList};
 use super::keycode::{KeyEvent, Keysym};
-use super::preedit::Preedit;
+use super::preedit::{Preedit, PreeditSegment};
 use super::state::InputState;
 use crate::config::settings::Settings;
 
@@ -169,6 +169,20 @@ pub struct InputMethodEngine {
     dicts: Dictionaries,
     /// Learning cache (user conversion history)
     learning: Option<LearningCache>,
+    /// Unconverted tail reading remaining after a partial conversion
+    /// (e.g. user placed cursor mid-buffer before pressing Space, or
+    /// shrank the conversion range with Shift+Left). Committed back to
+    /// Composing after the conversion is confirmed.
+    conversion_tail: Option<String>,
+    /// Segments confirmed by Right arrow during partial conversion but not
+    /// yet committed to the application. Left arrow pops the last entry
+    /// to go back.
+    confirmed_segments: Vec<ConvertedSegment>,
+    /// Already-converted segments to the RIGHT of the current one, created
+    /// when Left arrow steps back over them, ordered left to right. Right
+    /// arrow pops the front entry to re-enter it with its previous selection
+    /// intact, so stepping back doesn't revert converted segments to raw kana.
+    upcoming_segments: Vec<ConvertedSegment>,
 }
 
 impl InputMethodEngine {
@@ -191,6 +205,9 @@ impl InputMethodEngine {
             chunks: Vec::new(),
             dicts: Dictionaries::default(),
             learning: None,
+            conversion_tail: None,
+            confirmed_segments: Vec::new(),
+            upcoming_segments: Vec::new(),
         }
     }
 
@@ -261,6 +278,9 @@ impl InputMethodEngine {
         self.input_buf.clear();
         self.live.text.clear();
         self.chunks.clear();
+        self.conversion_tail = None;
+        self.confirmed_segments.clear();
+        self.upcoming_segments.clear();
         self.metrics = ConversionMetrics::default();
     }
 

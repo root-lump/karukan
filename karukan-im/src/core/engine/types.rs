@@ -267,6 +267,18 @@ pub(in crate::core) struct ComposingChunk {
     pub converted: String,
 }
 
+/// One already-converted segment held during segment navigation (partial
+/// conversion): the display text the user chose and the reading it was
+/// converted from. The reading is what gets recorded in the learning cache
+/// when the segment is finally committed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::core) struct ConvertedSegment {
+    /// Converted display text (e.g. `藍`).
+    pub text: String,
+    /// Hiragana reading `text` was converted from (e.g. `あい`).
+    pub reading: String,
+}
+
 /// Live conversion state: enabled flag and current converted text
 #[derive(Debug, Clone, Default)]
 pub(in crate::core) struct LiveConversion {
