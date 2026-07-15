@@ -376,6 +376,11 @@ impl InputMethodEngine {
     ///
     /// Priority: Learning → User Dictionary → Model → System Dictionary → Fallback
     ///
+    /// Learning lookups are exact-match only — see
+    /// [`lookup_learning_candidates_exact`] for why a predictive (prefix)
+    /// match must never become the default selection. Predictive matches
+    /// still appear in the Composing auto-suggest list.
+    ///
     /// `skip_learning` suppresses the learning-cache step (1). Used by the Tab
     /// key path so users can escape a noisy learning history without losing
     /// access to dictionary/model candidates.
@@ -384,28 +389,6 @@ impl InputMethodEngine {
         reading: &str,
         num_candidates: usize,
         skip_learning: bool,
-    ) -> Vec<AnnotatedCandidate> {
-        self.build_conversion_candidates_impl(reading, num_candidates, skip_learning, true)
-    }
-
-    /// Like [`build_conversion_candidates`] but restricted to exact-match
-    /// learning candidates only (see [`lookup_learning_candidates_exact`]).
-    /// Used by segment range navigation so a longer predictive suggestion
-    /// never becomes the default selection for a shorter reading.
-    pub(super) fn build_conversion_candidates_exact_learning(
-        &mut self,
-        reading: &str,
-        num_candidates: usize,
-    ) -> Vec<AnnotatedCandidate> {
-        self.build_conversion_candidates_impl(reading, num_candidates, false, false)
-    }
-
-    fn build_conversion_candidates_impl(
-        &mut self,
-        reading: &str,
-        num_candidates: usize,
-        skip_learning: bool,
-        include_predictive_learning: bool,
     ) -> Vec<AnnotatedCandidate> {
         // Try to initialize the kanji converter, but don't bail out if it
         // fails — symbol-only inputs (e.g. `。。。`) don't need the model and
@@ -426,15 +409,11 @@ impl InputMethodEngine {
         // Priority: Learning → User Dictionary → Model → System Dictionary → Fallback
         let mut builder = CandidateBuilder::new();
 
-        // 1. Learning cache candidates (highest priority).
+        // 1. Learning cache candidates (highest priority, exact match only).
         //    Force-inserted so they win against duplicate text from later sources.
         //    Skipped when the caller asks for a learning-free conversion (Tab key).
         if !skip_learning {
-            let learning_candidates = if include_predictive_learning {
-                self.lookup_learning_candidates(reading)
-            } else {
-                self.lookup_learning_candidates_exact(reading)
-            };
+            let learning_candidates = self.lookup_learning_candidates_exact(reading);
             for c in learning_candidates {
                 // Exact matches have reading == input reading; use None to avoid redundancy
                 let cand_reading = c.reading.filter(|r| r != reading);
@@ -561,11 +540,11 @@ impl InputMethodEngine {
     /// Like [`lookup_learning_candidates`] but restricted to exact matches
     /// (`reading` == the cached full reading).
     ///
-    /// Used by segment range navigation (shrink/expand/advance/return): a
-    /// predictive (prefix) match's surface corresponds to a *longer* reading
-    /// than what's currently selected, so auto-selecting it as the default
-    /// candidate would silently commit characters the user never typed when
-    /// the segment is confirmed.
+    /// Used for every explicit conversion (Space, segment navigation, range
+    /// adjustment): a predictive (prefix) match's surface corresponds to a
+    /// *longer* reading than what's being converted, so auto-selecting it as
+    /// the default candidate would silently commit characters the user never
+    /// typed.
     pub(super) fn lookup_learning_candidates_exact(&self, reading: &str) -> Vec<Candidate> {
         self.lookup_learning_candidates_impl(reading, false)
     }
@@ -1051,7 +1030,7 @@ impl InputMethodEngine {
         }
 
         let mut candidates =
-            self.build_conversion_candidates_exact_learning(reading, self.config.num_candidates);
+            self.build_conversion_candidates(reading, self.config.num_candidates, false);
 
         if let Some(preferred) = preselect
             && !candidates.iter().any(|c| c.text == preferred)

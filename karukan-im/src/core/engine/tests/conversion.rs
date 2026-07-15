@@ -600,3 +600,59 @@ fn test_alphabet_mode_space_inserts_literal_space() {
     engine.process_key(&press('k'));
     assert_eq!(engine.preedit().unwrap().text(), "New york");
 }
+
+#[test]
+fn test_space_conversion_does_not_adopt_longer_predictive_candidate() {
+    // A learned surface for a LONGER reading (prefix match) must not become
+    // the default selection when converting exactly what was typed — the
+    // commit would contain characters the user never entered.
+    let mut engine = InputMethodEngine::new();
+    let mut cache = LearningCache::new(100);
+    cache.record("あいさつ", "挨拶");
+    engine.learning = Some(cache);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let selected = engine
+        .candidates()
+        .and_then(|c| c.selected_text())
+        .unwrap_or("");
+    assert_ne!(
+        selected, "挨拶",
+        "predictive learning candidate for あいさつ must not be auto-selected for あい"
+    );
+}
+
+#[test]
+fn test_live_segment_selection_does_not_adopt_longer_predictive_candidate() {
+    // Same guarantee when entering segment selection from live conversion
+    // (Left arrow): if the live text is deduplicated against the rebuilt
+    // candidate list, the default selection must still not fall on a
+    // predictive learning candidate for a longer reading.
+    let mut engine = InputMethodEngine::new();
+    engine.live.enabled = true;
+    let mut cache = LearningCache::new(100);
+    cache.record("あいさつ", "挨拶");
+    engine.learning = Some(cache);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    // "アイ" is also produced as a katakana fallback candidate, so the
+    // live text gets deduplicated instead of being re-inserted at the top.
+    engine.live.text = "アイ".to_string();
+
+    engine.process_key(&press_key(Keysym::LEFT));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let selected = engine
+        .candidates()
+        .and_then(|c| c.selected_text())
+        .unwrap_or("");
+    assert_ne!(
+        selected, "挨拶",
+        "predictive learning candidate must not be auto-selected in live segment selection"
+    );
+}
