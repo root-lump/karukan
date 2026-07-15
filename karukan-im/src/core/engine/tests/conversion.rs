@@ -1,11 +1,6 @@
 use super::*;
-use crate::core::keycode::KeyModifiers;
 use crate::core::preedit::AttributeType;
 use karukan_engine::LearningCache;
-
-fn press_shift_key(keysym: Keysym) -> KeyEvent {
-    KeyEvent::new(keysym, KeyModifiers::new().with_shift(true), true)
-}
 
 /// Extract the committed text from an `EngineResult`, if any.
 fn commit_text_of(result: &EngineResult) -> Option<String> {
