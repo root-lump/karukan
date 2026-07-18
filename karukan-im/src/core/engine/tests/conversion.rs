@@ -602,19 +602,26 @@ fn test_alphabet_mode_space_inserts_literal_space() {
 }
 
 #[test]
-fn test_space_conversion_does_not_adopt_longer_predictive_candidate() {
-    // A learned surface for a LONGER reading (prefix match) must not become
-    // the default selection when converting exactly what was typed — the
-    // commit would contain characters the user never entered.
+fn test_mid_buffer_conversion_does_not_adopt_longer_predictive_candidate() {
+    // `あい|さつ` + Space converts only `あい`; a predictive learning match
+    // (`挨拶`, reading あいさつ) must not become the default selection — the
+    // tail `さつ` is still in the preedit, so committing it would duplicate
+    // those characters (`挨拶さつ`).
     let mut engine = InputMethodEngine::new();
     let mut cache = LearningCache::new(LearningConfig::default());
     cache.record("あいさつ", "挨拶");
     engine.learning = Some(cache);
 
-    engine.process_key(&press('a'));
-    engine.process_key(&press('i'));
+    for ch in ['a', 'i', 's', 'a', 't', 's', 'u'] {
+        engine.process_key(&press(ch));
+    }
+    assert_eq!(engine.input_buf.text, "あいさつ");
+    engine.process_key(&press_key(Keysym::LEFT));
+    engine.process_key(&press_key(Keysym::LEFT));
+
     engine.process_key(&press_key(Keysym::SPACE));
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(engine.conversion_tail.as_deref(), Some("さつ"));
 
     let selected = engine
         .candidates()
@@ -622,16 +629,16 @@ fn test_space_conversion_does_not_adopt_longer_predictive_candidate() {
         .unwrap_or("");
     assert_ne!(
         selected, "挨拶",
-        "predictive learning candidate for あいさつ must not be auto-selected for あい"
+        "predictive learning candidate must not be auto-selected when a tail remains"
     );
 }
 
 #[test]
-fn test_live_segment_selection_does_not_adopt_longer_predictive_candidate() {
-    // Same guarantee when entering segment selection from live conversion
-    // (Left arrow): if the live text is deduplicated against the rebuilt
-    // candidate list, the default selection must still not fall on a
-    // predictive learning candidate for a longer reading.
+fn test_live_conversion_entry_keeps_displayed_text_selected() {
+    // Entering conversion from live conversion (Left arrow) must keep the
+    // displayed live text selected even when it is already present in the
+    // rebuilt candidate list (deduplicated instead of re-inserted at the
+    // top) and a predictive learning candidate outranks it.
     let mut engine = InputMethodEngine::new();
     engine.live.enabled = true;
     let mut cache = LearningCache::new(LearningConfig::default());
@@ -640,19 +647,42 @@ fn test_live_segment_selection_does_not_adopt_longer_predictive_candidate() {
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
-    // "アイ" is also produced as a katakana fallback candidate, so the
-    // live text gets deduplicated instead of being re-inserted at the top.
+    // "アイ" is also produced as a katakana fallback candidate, so the live
+    // text gets deduplicated against the list instead of inserted at index 0.
     engine.live.text = "アイ".to_string();
 
     engine.process_key(&press_key(Keysym::LEFT));
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("アイ"),
+        "the text displayed during live conversion must stay selected"
+    );
+}
 
-    let selected = engine
-        .candidates()
-        .and_then(|c| c.selected_text())
-        .unwrap_or("");
-    assert_ne!(
-        selected, "挨拶",
-        "predictive learning candidate must not be auto-selected in live segment selection"
+#[test]
+fn test_live_conversion_space_moves_to_strongest_candidate() {
+    // Space during live conversion is an explicit conversion request: the
+    // selection moves to the strongest candidate — predictions included —
+    // rather than sticking to the displayed live text (which stays in the
+    // list). Only the arrow-key segment-selection entry keeps the display.
+    let mut engine = InputMethodEngine::new();
+    engine.live.enabled = true;
+    let mut cache = LearningCache::new(LearningConfig::default());
+    cache.record("あいさつ", "挨拶");
+    engine.learning = Some(cache);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    // "アイ" also exists as a katakana fallback candidate, so the live text
+    // is deduplicated into the list rather than inserted at the top.
+    engine.live.text = "アイ".to_string();
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("挨拶"),
+        "Space must select the predictive learning candidate (upstream behavior)"
     );
 }
