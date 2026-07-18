@@ -36,11 +36,34 @@ pub enum StrategyMode {
     Main,
 }
 
+/// How predictive candidates (learning-cache prefix matches whose reading
+/// extends beyond what was typed, e.g. learned あいさつ→挨拶 offered for あい)
+/// are surfaced. See `default.toml` for the user-facing description.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PredictionMode {
+    /// Predictions surface on a dedicated conversion key; the primary
+    /// conversion converts exactly the typed reading.
+    #[default]
+    Separate,
+    /// Predictions are merged into the primary conversion candidates (the
+    /// prediction shown while typing carries into the conversion); the
+    /// dedicated key becomes a learning-free conversion instead.
+    Merged,
+    /// Predictions are disabled entirely, including the composing
+    /// suggestion window; the dedicated key is a learning-free conversion.
+    Off,
+}
+
 /// Conversion-related settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConversionSettings {
     /// Conversion strategy mode (adaptive, light, main)
     pub strategy: StrategyMode,
+    /// How predictive (prefix-match learning) candidates are surfaced
+    pub prediction: PredictionMode,
+    /// Swap the conversion roles of Space and Tab
+    pub swap_space_tab: bool,
     /// Number of candidates to show on Space conversion
     pub num_candidates: usize,
     /// Use surrounding text (text left of cursor) as context for conversion
@@ -310,6 +333,28 @@ num_candidates = 5
         let path = file.path().to_path_buf();
         let settings = Settings::load_from(&path).unwrap();
         assert_eq!(settings.conversion.strategy, StrategyMode::Adaptive);
+    }
+
+    #[test]
+    fn test_prediction_defaults_and_parse() {
+        // Defaults: separate / no swap.
+        let settings = Settings::default();
+        assert_eq!(settings.conversion.prediction, PredictionMode::Separate);
+        assert!(!settings.conversion.swap_space_tab);
+
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[conversion]
+prediction = "merged"
+swap_space_tab = true
+"#
+        )
+        .unwrap();
+        let settings = Settings::load_from(file.path()).unwrap();
+        assert_eq!(settings.conversion.prediction, PredictionMode::Merged);
+        assert!(settings.conversion.swap_space_tab);
     }
 
     #[test]

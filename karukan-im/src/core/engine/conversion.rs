@@ -7,6 +7,7 @@ use std::time::Instant;
 use tracing::debug;
 
 use super::*;
+use crate::config::settings::PredictionMode;
 
 /// Maximum number of learning candidates to show
 const MAX_LEARNING_CANDIDATES: usize = 3;
@@ -22,6 +23,18 @@ fn width_annotation(text: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Which learning-cache candidates an explicit conversion includes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum LearningLookup {
+    /// Exact-match entries plus prefix (predictive) matches — surfaces whose
+    /// recorded reading extends beyond what was typed.
+    Predictive,
+    /// Exact-match entries only.
+    Exact,
+    /// No learning candidates at all (escape hatch from unwanted history).
+    Skip,
 }
 
 /// Helper for building a deduplicated list of conversion candidates.
@@ -170,34 +183,71 @@ impl InputMethodEngine {
         candidates
     }
 
-    /// Start kanji conversion for the current input buffer.
-    ///
-    /// Called when DOWN/TAB/SPACE is pressed: flushes any pending romaji,
-    /// resolves the reading, runs `build_conversion_candidates`, and
-    /// transitions into the Conversion state. The previous live-conversion
-    /// result is preserved as the first model candidate so the user sees
-    /// the same text they had been looking at during input.
-    ///
-    /// `predictive` is set by the Tab path: when the cursor sits at the end
-    /// of the buffer, learning-cache prefix matches (readings longer than
-    /// what was typed) are offered as selectable candidates. With the cursor
-    /// mid-buffer Tab degrades to the Space behavior — converting only up to
-    /// the cursor — so `predictive` is ignored there. Space/Down pass
-    /// `false`: they convert exactly the typed reading, never beyond it.
-    pub(super) fn start_conversion(&mut self, predictive: bool) -> EngineResult {
-        self.start_conversion_impl(predictive, false)
+    /// Space/Down key: the primary conversion, or the secondary one when
+    /// `swap_space_tab` is set.
+    pub(super) fn start_space_conversion(&mut self) -> EngineResult {
+        if self.config.swap_space_tab {
+            self.start_secondary_conversion()
+        } else {
+            self.start_primary_conversion()
+        }
     }
 
-    /// Like [`start_conversion`], but keeps the currently displayed live
-    /// conversion text selected. Used when the arrow keys turn an active
-    /// live conversion into segment selection: the user's intent is to
-    /// operate on what they see, so entering conversion must not visibly
+    /// Tab key: the secondary conversion, or the primary one when
+    /// `swap_space_tab` is set.
+    pub(super) fn start_tab_conversion(&mut self) -> EngineResult {
+        if self.config.swap_space_tab {
+            self.start_primary_conversion()
+        } else {
+            self.start_secondary_conversion()
+        }
+    }
+
+    /// The primary conversion role (bound to Space/Down by default):
+    /// converts exactly the typed reading, except in
+    /// [`PredictionMode::Merged`] where predictive learning candidates are
+    /// mixed in — the prediction shown while typing carries straight into
+    /// the conversion.
+    fn start_primary_conversion(&mut self) -> EngineResult {
+        let lookup = match self.config.prediction {
+            PredictionMode::Merged => LearningLookup::Predictive,
+            PredictionMode::Separate | PredictionMode::Off => LearningLookup::Exact,
+        };
+        self.start_conversion_impl(lookup, false)
+    }
+
+    /// The secondary conversion role (bound to Tab by default): the
+    /// predictive conversion in [`PredictionMode::Separate`], otherwise a
+    /// learning-free conversion that lets users escape unwanted history.
+    fn start_secondary_conversion(&mut self) -> EngineResult {
+        let lookup = match self.config.prediction {
+            PredictionMode::Separate => LearningLookup::Predictive,
+            PredictionMode::Merged | PredictionMode::Off => LearningLookup::Skip,
+        };
+        self.start_conversion_impl(lookup, false)
+    }
+
+    /// Like the key-driven conversions, but keeps the currently displayed
+    /// live conversion text selected. Used when the arrow keys turn an
+    /// active live conversion into segment selection: the user's intent is
+    /// to operate on what they see, so entering conversion must not visibly
     /// swap the preedit to a different candidate.
     pub(super) fn start_conversion_keep_display(&mut self) -> EngineResult {
-        self.start_conversion_impl(false, true)
+        self.start_conversion_impl(LearningLookup::Exact, true)
     }
 
-    fn start_conversion_impl(&mut self, predictive: bool, keep_display: bool) -> EngineResult {
+    /// Start kanji conversion for the current input buffer.
+    ///
+    /// Flushes any pending romaji, resolves the reading, runs
+    /// `build_conversion_candidates`, and transitions into the Conversion
+    /// state. The previous live-conversion result is preserved as the first
+    /// model candidate so the user sees the same text they had been looking
+    /// at during input.
+    fn start_conversion_impl(
+        &mut self,
+        lookup: LearningLookup,
+        keep_display: bool,
+    ) -> EngineResult {
         // Flush any remaining romaji into composed_hiragana
         self.flush_romaji_to_composed();
 
@@ -206,8 +256,14 @@ impl InputMethodEngine {
         let total_len = full_reading.chars().count();
 
         // Predictive candidates only make sense at the end of the buffer:
-        // anywhere else the conversion is bounded by the cursor.
-        let predictive = predictive && cursor == total_len;
+        // anywhere else the conversion is bounded by the cursor, and a
+        // prefix match's surface would duplicate the tail's characters on
+        // commit (e.g. `あい|さつ` converting to `挨拶` → `挨拶さつ`).
+        let lookup = if lookup == LearningLookup::Predictive && cursor != total_len {
+            LearningLookup::Exact
+        } else {
+            lookup
+        };
 
         // If cursor is in the middle, convert only up to cursor position;
         // the rest becomes the unconverted tail.
@@ -235,7 +291,7 @@ impl InputMethodEngine {
 
         // Get candidates from kanji converter (use full num_candidates for explicit conversion)
         let mut candidates =
-            self.build_conversion_candidates(&reading, self.config.num_candidates, predictive);
+            self.build_conversion_candidates(&reading, self.config.num_candidates, lookup);
 
         // If the previous auto-suggest result is not in the new candidates,
         // insert it at the top so it doesn't disappear when the conversion
@@ -397,18 +453,15 @@ impl InputMethodEngine {
     ///
     /// Priority: Learning → User Dictionary → Model → System Dictionary → Fallback
     ///
-    /// `predictive` (Tab at end of buffer) additionally surfaces learning-cache
-    /// prefix matches — surfaces whose recorded reading extends beyond what was
-    /// typed — so the user can select a prediction. All other paths (Space/Down
-    /// conversion and segment range navigation) pass `false`: an exact-match-only
-    /// lookup (see [`lookup_learning_candidates_exact`]), because auto-selecting
-    /// a longer prediction there would silently commit characters the user never
-    /// typed. Predictive matches still appear in the Composing auto-suggest list.
+    /// `lookup` decides which learning candidates step (1) includes — see
+    /// [`LearningLookup`]. Segment range navigation always passes
+    /// [`LearningLookup::Exact`]: auto-selecting a longer prediction there
+    /// would silently commit characters the user never typed.
     pub(super) fn build_conversion_candidates(
         &mut self,
         reading: &str,
         num_candidates: usize,
-        predictive: bool,
+        lookup: LearningLookup,
     ) -> Vec<AnnotatedCandidate> {
         // Try to initialize the kanji converter, but don't bail out if it
         // fails — symbol-only inputs (e.g. `。。。`) don't need the model and
@@ -431,11 +484,10 @@ impl InputMethodEngine {
 
         // 1. Learning cache candidates (highest priority).
         //    Force-inserted so they win against duplicate text from later sources.
-        //    Prefix (predictive) matches are included only on the Tab path.
-        let learning_candidates = if predictive {
-            self.lookup_learning_candidates(reading)
-        } else {
-            self.lookup_learning_candidates_exact(reading)
+        let learning_candidates = match lookup {
+            LearningLookup::Predictive => self.lookup_learning_candidates(reading),
+            LearningLookup::Exact => self.lookup_learning_candidates_exact(reading),
+            LearningLookup::Skip => Vec::new(),
         };
         for c in learning_candidates {
             // Exact matches have reading == input reading; use None to avoid redundancy
@@ -550,6 +602,17 @@ impl InputMethodEngine {
         }
 
         builder.into_candidates()
+    }
+
+    /// Learning candidates for the Composing suggestion window. Predictive
+    /// (prefix) matches are hints for the prediction key, so they are hidden
+    /// entirely in [`PredictionMode::Off`].
+    pub(super) fn lookup_suggest_learning_candidates(&self, reading: &str) -> Vec<Candidate> {
+        if self.config.prediction == PredictionMode::Off {
+            self.lookup_learning_candidates_exact(reading)
+        } else {
+            self.lookup_learning_candidates(reading)
+        }
     }
 
     /// Look up learning cache candidates for a reading (exact + prefix match, max 3).
@@ -923,8 +986,11 @@ impl InputMethodEngine {
         }
         debug!("deleted learning entry: {} -> {}", reading, surface);
 
-        let candidates =
-            self.build_conversion_candidates(&reading, self.config.num_candidates, false);
+        let candidates = self.build_conversion_candidates(
+            &reading,
+            self.config.num_candidates,
+            LearningLookup::Exact,
+        );
         if candidates.is_empty() {
             return self.cancel_conversion();
         }
@@ -1114,8 +1180,11 @@ impl InputMethodEngine {
             return EngineResult::consumed();
         }
 
-        let mut candidates =
-            self.build_conversion_candidates(reading, self.config.num_candidates, false);
+        let mut candidates = self.build_conversion_candidates(
+            reading,
+            self.config.num_candidates,
+            LearningLookup::Exact,
+        );
 
         if let Some(preferred) = preselect
             && !candidates.iter().any(|c| c.text == preferred)
