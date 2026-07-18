@@ -1,7 +1,10 @@
-//! Tests for the learning cache and the Tab-skips-learning behavior.
+//! Tests for the learning cache and the Space/Tab conversion split.
 //!
-//! Space/Down: include learning candidates (default conversion).
-//! Tab: skip learning candidates (lets users escape stale learned entries).
+//! Space/Down: convert exactly the typed reading — exact-match learning
+//! candidates only, never predictions beyond what was typed.
+//! Tab at end of buffer: predictive conversion — learned readings that
+//! extend beyond the typed prefix are offered as selectable candidates.
+//! Tab mid-buffer: degrades to the Space behavior (convert up to cursor).
 //! Ctrl+Delete: delete the selected learning candidate from the history.
 
 use karukan_engine::{LearningCache, LearningConfig};
@@ -22,8 +25,20 @@ fn engine_with_learned(reading: &str, surface: &str) -> InputMethodEngine {
     engine
 }
 
+/// Candidate texts currently shown in the Conversion state.
+fn conversion_texts(engine: &InputMethodEngine) -> Vec<String> {
+    engine
+        .state()
+        .candidates()
+        .unwrap()
+        .candidates()
+        .iter()
+        .map(|c| c.text.clone())
+        .collect()
+}
+
 #[test]
-fn build_candidates_includes_learning_when_not_skipped() {
+fn build_candidates_includes_exact_learning() {
     let mut engine = engine_with_learned("あい", "藍");
 
     let texts: Vec<String> = engine
@@ -34,32 +49,48 @@ fn build_candidates_includes_learning_when_not_skipped() {
 
     assert!(
         texts.contains(&"藍".to_string()),
-        "Space path (skip_learning=false) should surface learned `藍`, got {:?}",
+        "exact-match learned `藍` must appear on the Space path, got {:?}",
         texts,
     );
 }
 
 #[test]
-fn build_candidates_omits_learning_when_skipped() {
-    let mut engine = engine_with_learned("あい", "藍");
+fn build_candidates_excludes_predictions_when_not_predictive() {
+    let mut engine = engine_with_learned("あいさつ", "挨拶");
 
     let texts: Vec<String> = engine
-        .build_conversion_candidates("あい", 9, true)
+        .build_conversion_candidates("あい", 9, false)
         .into_iter()
         .map(|c| c.text)
         .collect();
 
     assert!(
-        !texts.contains(&"藍".to_string()),
-        "Tab path (skip_learning=true) must drop learned `藍`, got {:?}",
+        !texts.contains(&"挨拶".to_string()),
+        "Space path must not surface the prediction `挨拶` for `あい`, got {:?}",
         texts,
     );
 }
 
 #[test]
-fn tab_key_skips_learning_in_composing() {
-    // End-to-end: type the reading, press Tab → learned candidate is gone.
-    let mut engine = engine_with_learned("あい", "藍");
+fn build_candidates_includes_predictions_when_predictive() {
+    let mut engine = engine_with_learned("あいさつ", "挨拶");
+
+    let candidates = engine.build_conversion_candidates("あい", 9, true);
+    let predicted = candidates
+        .iter()
+        .find(|c| c.text == "挨拶")
+        .unwrap_or_else(|| panic!("Tab path must surface the prediction `挨拶`"));
+
+    // The prediction carries its full reading so committing it records
+    // learning under `あいさつ`, not the typed prefix `あい`.
+    assert_eq!(predicted.reading.as_deref(), Some("あいさつ"));
+}
+
+#[test]
+fn tab_at_end_offers_predictions() {
+    // End-to-end: type a prefix, press Tab at the end of the buffer →
+    // the learned longer reading's surface is selectable.
+    let mut engine = engine_with_learned("あいさつ", "挨拶");
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
@@ -69,18 +100,123 @@ fn tab_key_skips_learning_in_composing() {
     assert!(result.consumed);
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
 
-    let texts: Vec<String> = engine
-        .state()
-        .candidates()
-        .unwrap()
-        .candidates()
-        .iter()
-        .map(|c| c.text.clone())
-        .collect();
+    let texts = conversion_texts(&engine);
     assert!(
-        !texts.contains(&"藍".to_string()),
-        "Tab must skip the learned `藍` candidate, got {:?}",
+        texts.contains(&"挨拶".to_string()),
+        "Tab at end must offer the prediction `挨拶`, got {:?}",
         texts,
+    );
+}
+
+#[test]
+fn tab_keeps_learning_candidates() {
+    // Tab does not skip the learning cache: an exact-match learned
+    // candidate stays visible on the Tab path.
+    let mut engine = engine_with_learned("あい", "藍");
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+
+    let result = engine.process_key(&press_key(Keysym::TAB));
+    assert!(result.consumed);
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        texts.contains(&"藍".to_string()),
+        "Tab must keep the learned `藍` candidate, got {:?}",
+        texts,
+    );
+}
+
+#[test]
+fn tab_mid_buffer_behaves_like_space() {
+    // Cursor moved off the end: Tab converts only up to the cursor and
+    // must not surface predictions.
+    let mut engine = engine_with_learned("あいさつ", "挨拶");
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press('s'));
+    engine.process_key(&press('a'));
+    assert_eq!(engine.input_buf.text, "あいさ");
+
+    // Move cursor left once: あい|さ
+    engine.process_key(&press_key(Keysym::LEFT));
+    assert_eq!(engine.input_buf.cursor_pos, 2);
+
+    let result = engine.process_key(&press_key(Keysym::TAB));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    // Converted reading is bounded by the cursor; the rest is the tail.
+    assert_eq!(engine.input_buf.text, "あい");
+    assert_eq!(engine.conversion_tail.as_deref(), Some("さ"));
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        !texts.contains(&"挨拶".to_string()),
+        "Tab mid-buffer must not offer the prediction `挨拶`, got {:?}",
+        texts,
+    );
+}
+
+#[test]
+fn space_key_excludes_predictions_in_composing() {
+    // End-to-end: Space on a typed prefix must not show the learned longer
+    // reading's surface.
+    let mut engine = engine_with_learned("あいさつ", "挨拶");
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+
+    let result = engine.process_key(&press_key(Keysym::SPACE));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        !texts.contains(&"挨拶".to_string()),
+        "Space must not offer the prediction `挨拶`, got {:?}",
+        texts,
+    );
+}
+
+#[test]
+fn tab_commit_records_learning() {
+    // Selecting a prediction via Tab and committing must record learning
+    // under the prediction's full reading.
+    let mut engine = engine_with_learned("あいさつ", "挨拶");
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::TAB));
+
+    // Select the `挨拶` candidate.
+    let idx = {
+        let candidates = engine.state().candidates().unwrap();
+        candidates
+            .candidates()
+            .iter()
+            .position(|c| c.text == "挨拶")
+            .expect("prediction `挨拶` must be present")
+    };
+    for _ in 0..idx {
+        engine.process_key(&press_key(Keysym::TAB));
+    }
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert!(result.consumed);
+
+    // Learning must be recorded under the prediction's full reading, not
+    // under the typed prefix — a record for `あい → 挨拶` would make the
+    // 2-char reading auto-commit 4 chars' worth of text later.
+    let cache = engine.learning.as_ref().unwrap();
+    assert!(
+        cache.lookup("あいさつ").iter().any(|(s, _)| s == "挨拶"),
+        "committing via Tab must record `あいさつ → 挨拶` in the learning cache",
+    );
+    assert!(
+        !cache.lookup("あい").iter().any(|(s, _)| s == "挨拶"),
+        "the typed prefix `あい` must not learn the prediction's surface",
     );
 }
 
@@ -392,12 +528,13 @@ fn ctrl_delete_ignores_non_learning_candidate() {
 #[test]
 fn ctrl_delete_removes_prefix_matched_entry_by_full_reading() {
     // A prefix-matched learning candidate carries its own (longer) reading;
-    // deletion must remove the cache entry under that full reading.
+    // deletion must remove the cache entry under that full reading. On this
+    // fork predictions surface via Tab (Space is exact-match only).
     let mut engine = engine_with_learned("あいさつ", "挨拶");
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
-    engine.process_key(&press_key(Keysym::SPACE));
+    engine.process_key(&press_key(Keysym::TAB));
 
     let selected = engine
         .state()

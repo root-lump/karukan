@@ -178,31 +178,36 @@ impl InputMethodEngine {
     /// result is preserved as the first model candidate so the user sees
     /// the same text they had been looking at during input.
     ///
-    /// `skip_learning` is set by the Tab path to omit learning-cache
-    /// candidates (Space/Down keep the default learning-included behavior).
-    pub(super) fn start_conversion(&mut self, skip_learning: bool) -> EngineResult {
-        self.start_conversion_impl(skip_learning, false)
+    /// `predictive` is set by the Tab path: when the cursor sits at the end
+    /// of the buffer, learning-cache prefix matches (readings longer than
+    /// what was typed) are offered as selectable candidates. With the cursor
+    /// mid-buffer Tab degrades to the Space behavior — converting only up to
+    /// the cursor — so `predictive` is ignored there. Space/Down pass
+    /// `false`: they convert exactly the typed reading, never beyond it.
+    pub(super) fn start_conversion(&mut self, predictive: bool) -> EngineResult {
+        self.start_conversion_impl(predictive, false)
     }
 
     /// Like [`start_conversion`], but keeps the currently displayed live
     /// conversion text selected. Used when the arrow keys turn an active
     /// live conversion into segment selection: the user's intent is to
     /// operate on what they see, so entering conversion must not visibly
-    /// swap the preedit to a different candidate (e.g. a predictive
-    /// learning match outranking the displayed text). Space/Down keep the
-    /// default behavior — an explicit conversion request moves the
-    /// selection to the strongest candidate, predictions included.
+    /// swap the preedit to a different candidate.
     pub(super) fn start_conversion_keep_display(&mut self) -> EngineResult {
         self.start_conversion_impl(false, true)
     }
 
-    fn start_conversion_impl(&mut self, skip_learning: bool, keep_display: bool) -> EngineResult {
+    fn start_conversion_impl(&mut self, predictive: bool, keep_display: bool) -> EngineResult {
         // Flush any remaining romaji into composed_hiragana
         self.flush_romaji_to_composed();
 
         let full_reading = self.input_buf.text.clone();
         let cursor = self.input_buf.cursor_pos;
         let total_len = full_reading.chars().count();
+
+        // Predictive candidates only make sense at the end of the buffer:
+        // anywhere else the conversion is bounded by the cursor.
+        let predictive = predictive && cursor == total_len;
 
         // If cursor is in the middle, convert only up to cursor position;
         // the rest becomes the unconverted tail.
@@ -228,17 +233,9 @@ impl InputMethodEngine {
             return EngineResult::consumed();
         }
 
-        // Get candidates from kanji converter (use full num_candidates for
-        // explicit conversion). A mid-buffer conversion leaves a tail:
-        // restrict learning to exact matches there — a prefix (predictive)
-        // match's surface already contains what the tail would add, so
-        // committing it would duplicate those characters (e.g. `あい|さつ`
-        // converting to `挨拶` and committing `挨拶さつ`).
-        let mut candidates = if !skip_learning && self.conversion_tail.is_some() {
-            self.build_conversion_candidates_exact_learning(&reading, self.config.num_candidates)
-        } else {
-            self.build_conversion_candidates(&reading, self.config.num_candidates, skip_learning)
-        };
+        // Get candidates from kanji converter (use full num_candidates for explicit conversion)
+        let mut candidates =
+            self.build_conversion_candidates(&reading, self.config.num_candidates, predictive);
 
         // If the previous auto-suggest result is not in the new candidates,
         // insert it at the top so it doesn't disappear when the conversion
@@ -400,36 +397,18 @@ impl InputMethodEngine {
     ///
     /// Priority: Learning → User Dictionary → Model → System Dictionary → Fallback
     ///
-    /// `skip_learning` suppresses the learning-cache step (1). Used by the Tab
-    /// key path so users can escape a noisy learning history without losing
-    /// access to dictionary/model candidates.
+    /// `predictive` (Tab at end of buffer) additionally surfaces learning-cache
+    /// prefix matches — surfaces whose recorded reading extends beyond what was
+    /// typed — so the user can select a prediction. All other paths (Space/Down
+    /// conversion and segment range navigation) pass `false`: an exact-match-only
+    /// lookup (see [`lookup_learning_candidates_exact`]), because auto-selecting
+    /// a longer prediction there would silently commit characters the user never
+    /// typed. Predictive matches still appear in the Composing auto-suggest list.
     pub(super) fn build_conversion_candidates(
         &mut self,
         reading: &str,
         num_candidates: usize,
-        skip_learning: bool,
-    ) -> Vec<AnnotatedCandidate> {
-        self.build_conversion_candidates_impl(reading, num_candidates, skip_learning, true)
-    }
-
-    /// Like [`build_conversion_candidates`] but restricted to exact-match
-    /// learning candidates only (see [`lookup_learning_candidates_exact`]).
-    /// Used by segment range navigation so a longer predictive suggestion
-    /// never becomes the default selection for a shorter reading.
-    pub(super) fn build_conversion_candidates_exact_learning(
-        &mut self,
-        reading: &str,
-        num_candidates: usize,
-    ) -> Vec<AnnotatedCandidate> {
-        self.build_conversion_candidates_impl(reading, num_candidates, false, false)
-    }
-
-    fn build_conversion_candidates_impl(
-        &mut self,
-        reading: &str,
-        num_candidates: usize,
-        skip_learning: bool,
-        include_predictive_learning: bool,
+        predictive: bool,
     ) -> Vec<AnnotatedCandidate> {
         // Try to initialize the kanji converter, but don't bail out if it
         // fails — symbol-only inputs (e.g. `。。。`) don't need the model and
@@ -452,21 +431,19 @@ impl InputMethodEngine {
 
         // 1. Learning cache candidates (highest priority).
         //    Force-inserted so they win against duplicate text from later sources.
-        //    Skipped when the caller asks for a learning-free conversion (Tab key).
-        if !skip_learning {
-            let learning_candidates = if include_predictive_learning {
-                self.lookup_learning_candidates(reading)
-            } else {
-                self.lookup_learning_candidates_exact(reading)
-            };
-            for c in learning_candidates {
-                // Exact matches have reading == input reading; use None to avoid redundancy
-                let cand_reading = c.reading.filter(|r| r != reading);
-                builder.push_force(
-                    AnnotatedCandidate::new(c.text, CandidateSource::Learning)
-                        .with_reading(cand_reading),
-                );
-            }
+        //    Prefix (predictive) matches are included only on the Tab path.
+        let learning_candidates = if predictive {
+            self.lookup_learning_candidates(reading)
+        } else {
+            self.lookup_learning_candidates_exact(reading)
+        };
+        for c in learning_candidates {
+            // Exact matches have reading == input reading; use None to avoid redundancy
+            let cand_reading = c.reading.filter(|r| r != reading);
+            builder.push_force(
+                AnnotatedCandidate::new(c.text, CandidateSource::Learning)
+                    .with_reading(cand_reading),
+            );
         }
 
         // 2. Dictionary candidates (user dict first, then system dict)
@@ -1138,7 +1115,7 @@ impl InputMethodEngine {
         }
 
         let mut candidates =
-            self.build_conversion_candidates_exact_learning(reading, self.config.num_candidates);
+            self.build_conversion_candidates(reading, self.config.num_candidates, false);
 
         if let Some(preferred) = preselect
             && !candidates.iter().any(|c| c.text == preferred)
