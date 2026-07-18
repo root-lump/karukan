@@ -147,17 +147,41 @@ fn test_live_conversion_commit_empty_falls_back_to_hiragana() {
 }
 
 #[test]
-fn test_live_conversion_cursor_move_clears() {
-    // Moving cursor should clear live conversion text
+fn test_live_conversion_left_enters_segment_selection() {
+    // While live conversion is displaying converted text, Left must start
+    // segment selection over that conversion (Conversion state, live text
+    // preserved as the selected candidate) instead of dropping the preedit
+    // back to raw hiragana.
     let mut engine = make_live_conversion_engine();
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     engine.live.text = "愛".to_string();
 
-    // Left arrow clears live conversion
     engine.process_key(&press_key(Keysym::LEFT));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("愛"),
+        "live conversion result must stay displayed as the selection"
+    );
+    assert_eq!(engine.preedit().unwrap().text(), "愛");
+}
+
+#[test]
+fn test_live_conversion_home_still_moves_caret() {
+    // Home (and End/Ctrl+A/B/E/F) remain the caret-editing gesture during
+    // live conversion: they clear the live text and expose the raw reading.
+    let mut engine = make_live_conversion_engine();
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.live.text = "愛".to_string();
+
+    engine.process_key(&press_key(Keysym::HOME));
     assert!(engine.live.text.is_empty());
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.preedit().unwrap().text(), "あい");
 }
 
 #[test]
@@ -380,4 +404,132 @@ fn test_ctrl_shift_l_shows_aux_text() {
         |a| matches!(a, EngineAction::UpdateAuxText(text) if text.contains("ライブ変換: OFF")),
     );
     assert!(has_aux);
+}
+
+// --- Live conversion × segment editing (partial edit) ---
+
+/// Live-conversion engine with learning entries so partial conversion has
+/// deterministic candidates ("あい"→"藍", "うえお"→"ウエオ").
+fn make_live_conversion_engine_with_learned() -> InputMethodEngine {
+    let mut engine = make_live_conversion_engine();
+    let mut cache = karukan_engine::LearningCache::new(karukan_engine::LearningConfig::default());
+    cache.record("あい", "藍");
+    cache.record("うえお", "ウエオ");
+    engine.learning = Some(cache);
+    engine
+}
+
+/// First `Commit` action's text, if any.
+fn live_commit_text_of(result: &EngineResult) -> Option<String> {
+    result.actions.iter().find_map(|a| match a {
+        EngineAction::Commit(t) => Some(t.clone()),
+        _ => None,
+    })
+}
+
+#[test]
+fn test_live_conversion_partial_edit_flow() {
+    // Segment editing must work identically when live conversion is on:
+    // Escape drops the live text back to raw hiragana, the caret moves,
+    // Space converts up to the caret, and Right/Enter walk and commit
+    // the segments.
+    let mut engine = make_live_conversion_engine_with_learned();
+
+    for ch in ['a', 'i', 'u', 'e', 'o'] {
+        engine.process_key(&press(ch));
+    }
+    // Simulate an active live conversion result for the whole buffer.
+    engine.live.text = "愛上尾".to_string();
+
+    // Escape leaves live conversion and shows raw hiragana; the caret
+    // can then move over the reading.
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    assert!(engine.live.text.is_empty());
+    engine.process_key(&press_key(Keysym::LEFT));
+    engine.process_key(&press_key(Keysym::LEFT));
+    engine.process_key(&press_key(Keysym::LEFT));
+
+    // Space converts only up to the caret.
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("藍")
+    );
+
+    // Right converts the tail, Enter commits both segments joined.
+    engine.process_key(&press_key(Keysym::RIGHT));
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert_eq!(live_commit_text_of(&result).as_deref(), Some("藍ウエオ"));
+    assert!(matches!(engine.state(), InputState::Empty));
+    assert!(engine.live.text.is_empty());
+}
+
+#[test]
+fn test_live_conversion_tail_commit_returns_to_composing() {
+    // Committing a partial conversion while live conversion is on must
+    // return to Composing with the unconverted tail and no stale live text.
+    let mut engine = make_live_conversion_engine_with_learned();
+
+    for ch in ['a', 'i', 'u', 'e', 'o'] {
+        engine.process_key(&press(ch));
+    }
+    engine.live.text = "愛上尾".to_string();
+
+    // Escape drops to hiragana so the caret can move over the reading.
+    engine.process_key(&press_key(Keysym::ESCAPE));
+    engine.process_key(&press_key(Keysym::LEFT));
+    engine.process_key(&press_key(Keysym::LEFT));
+    engine.process_key(&press_key(Keysym::LEFT));
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    // Enter commits the converted "藍" and drops back to Composing with
+    // the tail "うえお", which re-enters the normal auto-suggest flow.
+    // (Whether live conversion picks the tail up again depends on model
+    // availability, so no assertion on `live.text` here.)
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert_eq!(live_commit_text_of(&result).as_deref(), Some("藍"));
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.input_buf.text, "うえお");
+}
+
+#[test]
+fn test_live_conversion_segment_selection_full_flow() {
+    // Left during live conversion enters segment selection with the live
+    // result displayed; Shift+Left shrinks the range, Right walks to the
+    // tail, Enter commits the joined segments — all without the preedit
+    // ever reverting to raw hiragana.
+    let mut engine = make_live_conversion_engine_with_learned();
+
+    for ch in ['a', 'i', 'u', 'e', 'o'] {
+        engine.process_key(&press(ch));
+    }
+    engine.live.text = "愛上尾".to_string();
+
+    // Left: into Conversion, live result preserved as the selection.
+    engine.process_key(&press_key(Keysym::LEFT));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("愛上尾")
+    );
+
+    // Shrink to "あい": the learned exact match becomes the selection.
+    for _ in 0..3 {
+        engine.process_key(&press_shift_key(Keysym::LEFT));
+    }
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("藍")
+    );
+
+    // Right converts the tail; Enter commits both segments joined.
+    engine.process_key(&press_key(Keysym::RIGHT));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("ウエオ")
+    );
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert_eq!(live_commit_text_of(&result).as_deref(), Some("藍ウエオ"));
+    assert!(matches!(engine.state(), InputState::Empty));
 }
