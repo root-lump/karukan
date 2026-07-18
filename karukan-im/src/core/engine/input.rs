@@ -52,7 +52,7 @@ impl InputMethodEngine {
             self.live.text.clear();
             let preedit = self.set_composing_state();
             let reading = self.input_buf.text.clone();
-            let mut all_candidates = self.lookup_learning_candidates(&reading);
+            let mut all_candidates = self.lookup_suggest_learning_candidates(&reading);
             append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
             append_candidates_dedup(&mut all_candidates, self.lookup_rewriter_variants(&reading));
             if all_candidates.is_empty() {
@@ -90,7 +90,7 @@ impl InputMethodEngine {
     /// live conversion.
     fn suggest_result(&mut self, candidates: Vec<String>, reading: &str) -> EngineResult {
         let preedit = self.set_composing_state();
-        let mut all_candidates = self.lookup_learning_candidates(reading);
+        let mut all_candidates = self.lookup_suggest_learning_candidates(reading);
         let model_candidates: Vec<Candidate> = candidates
             .into_iter()
             .map(|s| Candidate::with_reading(s, reading))
@@ -270,12 +270,14 @@ impl InputMethodEngine {
             Keysym::BACKSPACE => self.backspace_composing(),
             Keysym::DELETE => self.delete_composing(),
             Keysym::SPACE if self.mode.current() == InputMode::Alphabet => self.input_char(' '),
-            // Tab triggers predictive conversion (mozc's PredictAndConvert):
-            // at the end of the buffer, learned readings that extend beyond
-            // what was typed are offered as candidates. Mid-buffer, Tab
-            // behaves exactly like Space (convert up to the cursor).
-            Keysym::TAB => self.start_conversion(true),
-            Keysym::SPACE | Keysym::DOWN => self.start_conversion(false),
+            // Space/Down and Tab carry the primary and secondary conversion
+            // roles; which is which — and whether predictions surface on the
+            // secondary key (mozc's PredictAndConvert) or get mixed into the
+            // primary one — is decided by the `prediction` and
+            // `swap_space_tab` settings. See `start_space_conversion` /
+            // `start_tab_conversion`.
+            Keysym::TAB => self.start_tab_conversion(),
+            Keysym::SPACE | Keysym::DOWN => self.start_space_conversion(),
             // While live conversion is displaying converted text, the arrow
             // keys start segment selection over that conversion (matching
             // macOS live conversion) instead of dropping the preedit back to

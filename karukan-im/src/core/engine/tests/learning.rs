@@ -10,6 +10,7 @@
 use karukan_engine::{LearningCache, LearningConfig};
 
 use super::*;
+use crate::core::engine::conversion::LearningLookup;
 use crate::core::engine::display::LEARNING_DELETE_HINT;
 
 /// Engine seeded with a learning entry `reading → surface`, no kanji model.
@@ -42,7 +43,7 @@ fn build_candidates_includes_exact_learning() {
     let mut engine = engine_with_learned("あい", "藍");
 
     let texts: Vec<String> = engine
-        .build_conversion_candidates("あい", 9, false)
+        .build_conversion_candidates("あい", 9, LearningLookup::Exact)
         .into_iter()
         .map(|c| c.text)
         .collect();
@@ -59,7 +60,7 @@ fn build_candidates_excludes_predictions_when_not_predictive() {
     let mut engine = engine_with_learned("あいさつ", "挨拶");
 
     let texts: Vec<String> = engine
-        .build_conversion_candidates("あい", 9, false)
+        .build_conversion_candidates("あい", 9, LearningLookup::Exact)
         .into_iter()
         .map(|c| c.text)
         .collect();
@@ -75,7 +76,7 @@ fn build_candidates_excludes_predictions_when_not_predictive() {
 fn build_candidates_includes_predictions_when_predictive() {
     let mut engine = engine_with_learned("あいさつ", "挨拶");
 
-    let candidates = engine.build_conversion_candidates("あい", 9, true);
+    let candidates = engine.build_conversion_candidates("あい", 9, LearningLookup::Predictive);
     let predicted = candidates
         .iter()
         .find(|c| c.text == "挨拶")
@@ -608,6 +609,116 @@ fn space_key_keeps_learning_in_composing() {
     assert!(
         texts.contains(&"藍".to_string()),
         "Space must surface learned `藍`, got {:?}",
+        texts,
+    );
+}
+
+// --- prediction / swap_space_tab settings ---
+
+use crate::config::settings::PredictionMode;
+
+/// Engine with the given prediction/swap settings and a learned entry.
+fn engine_with_learned_config(
+    reading: &str,
+    surface: &str,
+    prediction: PredictionMode,
+    swap_space_tab: bool,
+) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        prediction,
+        swap_space_tab,
+        ..EngineConfig::default()
+    });
+    engine.converters.kanji = None;
+    let mut cache = LearningCache::new(LearningConfig::default());
+    cache.record(reading, surface);
+    engine.learning = Some(cache);
+    engine
+}
+
+#[test]
+fn merged_space_includes_predictions() {
+    // prediction = "merged": the primary conversion (Space) mixes in
+    // predictive learning candidates, upstream-style.
+    let mut engine = engine_with_learned_config("あいさつ", "挨拶", PredictionMode::Merged, false);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("挨拶"),
+        "merged mode must surface the prediction on Space"
+    );
+}
+
+#[test]
+fn merged_tab_skips_learning() {
+    // prediction = "merged": the secondary key becomes the learning-free
+    // conversion (escape hatch), like the historical Tab behavior.
+    let mut engine = engine_with_learned_config("あい", "藍", PredictionMode::Merged, false);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::TAB));
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        !texts.contains(&"藍".to_string()),
+        "merged mode's Tab must skip learned candidates, got {:?}",
+        texts,
+    );
+}
+
+#[test]
+fn off_hides_predictions_everywhere() {
+    // prediction = "off": no predictions in the composing suggestion window
+    // nor in either conversion.
+    let mut engine = engine_with_learned_config("あいさつ", "挨拶", PredictionMode::Off, false);
+
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press('i'));
+
+    // Composing suggestion window must not show the prediction.
+    for action in &result.actions {
+        if let EngineAction::ShowCandidates(list) = action {
+            assert!(
+                !list.candidates().iter().any(|c| c.text == "挨拶"),
+                "off mode must hide predictions from the suggestion window"
+            );
+        }
+    }
+
+    // Neither Space nor Tab surfaces it.
+    engine.process_key(&press_key(Keysym::SPACE));
+    let texts = conversion_texts(&engine);
+    assert!(!texts.contains(&"挨拶".to_string()));
+}
+
+#[test]
+fn swap_space_tab_swaps_conversion_roles() {
+    // swap_space_tab = true with the default "separate" prediction:
+    // Space becomes the predictive conversion, Tab the exact one.
+    let mut engine = engine_with_learned_config("あいさつ", "挨拶", PredictionMode::Separate, true);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    let texts = conversion_texts(&engine);
+    assert!(
+        texts.contains(&"挨拶".to_string()),
+        "swapped Space must offer predictions, got {:?}",
+        texts,
+    );
+    engine.process_key(&press_key(Keysym::ESCAPE));
+
+    engine.process_key(&press_key(Keysym::TAB));
+    let texts = conversion_texts(&engine);
+    assert!(
+        !texts.contains(&"挨拶".to_string()),
+        "swapped Tab must convert the typed reading only, got {:?}",
         texts,
     );
 }
