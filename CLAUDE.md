@@ -12,6 +12,19 @@ karukan is a Japanese Input Method system for Linux and macOS, consisting of fou
 - **karukan-fcitx5**: fcitx5 Linux frontend — C FFI (`src/ffi/`) and C++ addon (`fcitx5-addon/`) that wrap karukan-im
 - **karukan-macos**: Swift/InputMethodKit frontend that spawns `karukan-imserver` as a bundled child process
 
+## Repository and Branch Workflow
+
+This checkout is the fork **root-lump/karukan** of **togatoga/karukan** (upstream). Remotes: `origin` = the fork, `upstream` = togatoga/karukan. (The former private mirror `karukan-private` has been deleted; its pre-consolidation history survives locally as `archive/private-main` and the `backup/*` branches.)
+
+Branch roles:
+
+- **`master`** — pure mirror of `upstream/main`. Never commit here. Update with `git fetch upstream && git branch -f master upstream/main && git push origin master`.
+- **`main`** — the fork's integration branch: own features plus upstream changes (taken in via `master`). **All changes enter `main` through fork-internal PRs**; do not push to `main` directly.
+- **`<type>/<short-description>`** (e.g. `feat/tab-predictive-conversion`) — feature branches, PR'd into `main`. Stacked branches are allowed; note the merge order in the PR body ("merge after #N") because the PR diff includes the base branch's commits until it merges.
+- **Upstream contribution branches** (e.g. `feat/segment-conversion` → togatoga/karukan#57) — branch from `upstream/main`, *not* from the fork's `main`, so fork-only changes (Space/Tab prediction, this section, etc.) never leak into upstream PRs. Push to `origin`, open the PR against `togatoga/karukan`. Once the PR exists, resolve upstream conflicts with a **merge commit** (`git merge upstream/main`), not a rebase — force-pushing a reviewed PR branch is avoided.
+
+Fork-only deviations from upstream to be aware of when syncing: the Space/Tab conversion-role split (`prediction` / `swap_space_tab` in config.toml) intentionally replaces upstream's "predictive candidates on Space, learning-skip on Tab" behavior, and upstream tests asserting that behavior are adapted (predictions surface via the prediction key instead).
+
 ## Build and Development Commands
 
 This project uses a Cargo workspace. All commands are run from the repository root.
