@@ -1,6 +1,6 @@
 use super::*;
 use crate::core::preedit::AttributeType;
-use karukan_engine::LearningCache;
+use karukan_engine::{LearningCache, LearningConfig};
 
 /// Extract the committed text from an `EngineResult`, if any.
 fn commit_text_of(result: &EngineResult) -> Option<String> {
@@ -26,7 +26,7 @@ fn commit_text_of(result: &EngineResult) -> Option<String> {
 /// non-deterministic).
 fn engine_in_partial_conversion() -> InputMethodEngine {
     let mut engine = InputMethodEngine::new();
-    let mut cache = LearningCache::new(100);
+    let mut cache = LearningCache::new(LearningConfig::default());
     cache.record("あい", "あい");
     cache.record("うえお", "うえお");
     engine.learning = Some(cache);
@@ -52,7 +52,7 @@ fn engine_in_partial_conversion() -> InputMethodEngine {
 /// tell converted text apart from raw kana.
 fn engine_in_partial_conversion_with_kanji() -> InputMethodEngine {
     let mut engine = InputMethodEngine::new();
-    let mut cache = LearningCache::new(100);
+    let mut cache = LearningCache::new(LearningConfig::default());
     cache.record("あい", "藍");
     cache.record("うえお", "ウエオ");
     engine.learning = Some(cache);
@@ -273,7 +273,7 @@ fn test_digit_selection_commits_and_learns_confirmed_segments() {
     // pre-seeded one, so it can assert that record_learning actually ran for the
     // confirmed segment — a pre-seeded cache would make that assertion vacuous.
     let mut engine = InputMethodEngine::new();
-    engine.learning = Some(LearningCache::new(100));
+    engine.learning = Some(LearningCache::new(LearningConfig::default()));
     for ch in ['a', 'i', 'u', 'e', 'o'] {
         engine.process_key(&press(ch));
     }
@@ -323,7 +323,7 @@ fn test_shrink_range_ignores_predictive_learning_match() {
     let mut engine = InputMethodEngine::new();
     engine.converters.kanji = None;
     // Learn a long phrase whose reading starts with "ゆ".
-    let mut cache = LearningCache::new(100);
+    let mut cache = LearningCache::new(LearningConfig::default());
     cache.record("ゆーざーじしょをかくにんして", "ユーザー辞書を確認して");
     engine.learning = Some(cache);
 
@@ -607,7 +607,7 @@ fn test_space_conversion_does_not_adopt_longer_predictive_candidate() {
     // the default selection when converting exactly what was typed — the
     // commit would contain characters the user never entered.
     let mut engine = InputMethodEngine::new();
-    let mut cache = LearningCache::new(100);
+    let mut cache = LearningCache::new(LearningConfig::default());
     cache.record("あいさつ", "挨拶");
     engine.learning = Some(cache);
 
@@ -634,7 +634,7 @@ fn test_live_segment_selection_does_not_adopt_longer_predictive_candidate() {
     // predictive learning candidate for a longer reading.
     let mut engine = InputMethodEngine::new();
     engine.live.enabled = true;
-    let mut cache = LearningCache::new(100);
+    let mut cache = LearningCache::new(LearningConfig::default());
     cache.record("あいさつ", "挨拶");
     engine.learning = Some(cache);
 

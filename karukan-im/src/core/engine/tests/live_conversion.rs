@@ -412,7 +412,7 @@ fn test_ctrl_shift_l_shows_aux_text() {
 /// deterministic candidates ("あい"→"藍", "うえお"→"ウエオ").
 fn make_live_conversion_engine_with_learned() -> InputMethodEngine {
     let mut engine = make_live_conversion_engine();
-    let mut cache = karukan_engine::LearningCache::new(100);
+    let mut cache = karukan_engine::LearningCache::new(karukan_engine::LearningConfig::default());
     cache.record("あい", "藍");
     cache.record("うえお", "ウエオ");
     engine.learning = Some(cache);
