@@ -1,0 +1,120 @@
+name: Upstream Sync
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 毎日 UTC 0:00
+  workflow_dispatch:  # 手動実行も可能
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream
+        run: |
+          git remote add upstream https://github.com/togatoga/karukan.git || true
+          git fetch upstream main
+          git fetch origin master main
+
+      - name: Update master branch
+        run: |
+          git checkout master
+          git merge --ff-only upstream/main
+          git push origin master
+
+      - name: Check for diff between master and main
+        id: check_diff
+        run: |
+          if git diff --quiet master main; then
+            echo "has_diff=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_diff=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Collect upstream PR titles from merge commits
+        if: steps.check_diff.outputs.has_diff == 'true'
+        id: collect_prs
+        run: |
+          # main..master 間のマージコミットから PR 情報を抽出（API 不要）
+          PR_LIST=""
+          while IFS= read -r line; do
+            if [ -n "$line" ]; then
+              # subject から PR 番号を抽出、body から PR タイトルを取得
+              PR_NUM=$(echo "$line" | grep -oP '(?<=#)\d+' | head -1)
+              PR_TITLE=$(git log --format="%b" -1 "$(echo "$line" | cut -d' ' -f1)")
+              if [ -n "$PR_NUM" ] && [ -n "$PR_TITLE" ]; then
+                PR_LIST="${PR_LIST}- togatoga/karukan#${PR_NUM} ${PR_TITLE}"$'\n'
+              fi
+            fi
+          done < <(git log main..master --merges --oneline --grep="Merge pull request")
+
+          # マージコミットが見つからない場合（squash merge 等）のフォールバック
+          if [ -z "$PR_LIST" ]; then
+            PR_LIST="(マージコミットなし。コミット一覧:)"$'\n'
+            while IFS= read -r line; do
+              PR_LIST="${PR_LIST}- ${line}"$'\n'
+            done < <(git log main..master --oneline --no-merges | head -20)
+          fi
+
+          # multiline output
+          {
+            echo "pr_list<<EOF"
+            echo "$PR_LIST"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create or update PR
+        if: steps.check_diff.outputs.has_diff == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_ENTRIES: ${{ steps.collect_prs.outputs.pr_list }}
+        run: |
+          EXISTING_PR=$(gh pr list --base main --head master --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [ -z "$EXISTING_PR" ]; then
+            # 新規 PR 作成
+            BODY="## Upstream Changes
+
+          upstream (togatoga/karukan) からの変更を main に取り込む PR です。
+
+          ### 含まれる upstream PR
+
+          ${NEW_ENTRIES}"
+            gh pr create --base main --head master \
+              --title "upstream sync: $(date -u +%Y-%m-%d)" \
+              --body "$BODY"
+          else
+            # 既存 PR の body に追記（重複排除）
+            CURRENT_BODY=$(gh pr view "$EXISTING_PR" --json body --jq '.body')
+
+            # 既に含まれている PR 番号を除外して新規分のみ追記
+            NEW_ONLY=""
+            while IFS= read -r entry; do
+              if [ -n "$entry" ] && ! echo "$CURRENT_BODY" | grep -qF "$entry"; then
+                NEW_ONLY="${NEW_ONLY}${entry}"$'\n'
+              fi
+            done <<< "$NEW_ENTRIES"
+
+            if [ -n "$NEW_ONLY" ]; then
+              UPDATED_BODY="${CURRENT_BODY}
+
+          ---
+          **$(date -u +%Y-%m-%d) 追加分:**
+
+          ${NEW_ONLY}"
+              gh pr edit "$EXISTING_PR" --body "$UPDATED_BODY"
+            fi
+          fi
