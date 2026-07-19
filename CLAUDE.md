@@ -18,7 +18,8 @@ This checkout is the fork **root-lump/karukan** of **togatoga/karukan** (upstrea
 
 Branch roles:
 
-- **`master`** — pure mirror of `upstream/main`. Never commit here. Update with `git fetch upstream && git branch -f master upstream/main && git push origin master`.
+- **`master`** — pure mirror of `upstream/main`. Never commit here. Updated automatically by the `upstream-sync` workflow (daily cron / manual dispatch); the manual equivalent is `git fetch upstream && git branch -f master upstream/main && git push origin master`.
+- **`upstream-sync`** — machine-owned branch, force-rebuilt by the `upstream-sync` workflow as `main` + merge of `master`, and PR'd into `main`. Never commit here; if the workflow fails on a merge conflict, resolve it by other means (the branch will be rebuilt on the next run).
 - **`main`** — the fork's integration branch: own features plus upstream changes (taken in via `master`). **All changes enter `main` through fork-internal PRs**; do not push to `main` directly.
 - **`<type>/<short-description>`** (e.g. `feat/tab-predictive-conversion`) — feature branches, PR'd into `main`. Stacked branches are allowed; note the merge order in the PR body ("merge after #N") because the PR diff includes the base branch's commits until it merges.
 - **Upstream contribution branches** (e.g. `feat/segment-conversion` → togatoga/karukan#57) — branch from `upstream/main`, *not* from the fork's `main`, so fork-only changes (Space/Tab prediction, this section, etc.) never leak into upstream PRs. Push to `origin`, open the PR against `togatoga/karukan`. Once the PR exists, resolve upstream conflicts with a **merge commit** (`git merge upstream/main`), not a rebase — force-pushing a reviewed PR branch is avoided.
