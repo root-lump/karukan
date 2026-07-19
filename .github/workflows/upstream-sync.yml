@@ -84,6 +84,16 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Build sync branch
+        if: steps.check_diff.outputs.has_diff == 'true'
+        run: |
+          # master はミラーなので PR の head にせず、main から作り直した
+          # 専用ブランチに master をマージして常に main に追従させる
+          # （コンフリクト時はここで失敗し、手動解消が必要なことに気づける）
+          git checkout -B upstream-sync origin/main
+          git merge --no-edit master
+          git push -f origin upstream-sync
+
       - name: Create or update PR
         if: steps.check_diff.outputs.has_diff == 'true'
         env:
@@ -93,7 +103,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           NEW_ENTRIES: ${{ steps.collect_prs.outputs.pr_list }}
         run: |
-          EXISTING_PR=$(gh pr list --base main --head master --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+          EXISTING_PR=$(gh pr list --base main --head upstream-sync --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
 
           if [ -z "$EXISTING_PR" ]; then
             # 新規 PR 作成
@@ -104,7 +114,7 @@ jobs:
           ### 含まれる upstream PR
 
           ${NEW_ENTRIES}"
-            gh pr create --base main --head master \
+            gh pr create --base main --head upstream-sync \
               --title "upstream sync: $(date -u +%Y-%m-%d)" \
               --body "$BODY"
           else
@@ -126,6 +136,7 @@ jobs:
           **$(date -u +%Y-%m-%d) 追加分:**
 
           ${NEW_ONLY}"
-              gh pr edit "$EXISTING_PR" --body "$UPDATED_BODY"
+              gh pr edit "$EXISTING_PR" --body "$UPDATED_BODY" \
+                --title "upstream sync: $(date -u +%Y-%m-%d)"
             fi
           fi
