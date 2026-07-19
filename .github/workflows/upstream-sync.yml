@@ -51,8 +51,9 @@ jobs:
         id: collect_prs
         run: |
           # main..master 間のマージコミットから PR 情報を抽出（API 不要）
-          # PR 番号は fork 元 PR への相互参照（mentioned 通知）を避けるため
-          # コードスパンで囲み、GitHub のオートリンクを無効化する
+          # fork 元 PR への相互参照（mentioned 通知）を残さないよう、リンクは
+          # redirect.github.com 経由にする（バックリンクを生成しない公式の方法:
+          # docs.github.com の "Avoiding backlinks to linked references"）
           PR_LIST=""
           while IFS= read -r line; do
             if [ -n "$line" ]; then
@@ -60,17 +61,19 @@ jobs:
               PR_NUM=$(echo "$line" | grep -oP '(?<=#)\d+' | head -1)
               PR_TITLE=$(git log --format="%b" -1 "$(echo "$line" | cut -d' ' -f1)")
               if [ -n "$PR_NUM" ] && [ -n "$PR_TITLE" ]; then
-                PR_LIST="${PR_LIST}- \`#${PR_NUM}\` ${PR_TITLE}"$'\n'
+                PR_LIST="${PR_LIST}- [#${PR_NUM}](https://redirect.github.com/togatoga/karukan/pull/${PR_NUM}) ${PR_TITLE}"$'\n'
               fi
             fi
           done < <(git log main..master --merges --oneline --grep="Merge pull request")
 
           # マージコミットが見つからない場合（squash merge 等）のフォールバック
-          # コミット subject 中の "(#N)" もオートリンクされるため行ごと囲む
+          # subject 中の "(#N)" はそのままだと自リポジトリの PR として誤リンク
+          # されるため、redirect.github.com 経由の upstream リンクに変換する
           if [ -z "$PR_LIST" ]; then
             PR_LIST="(マージコミットなし。コミット一覧:)"$'\n'
             while IFS= read -r line; do
-              PR_LIST="${PR_LIST}- \`${line}\`"$'\n'
+              LINKED=$(echo "$line" | sed -E 's|#([0-9]+)|[#\1](https://redirect.github.com/togatoga/karukan/pull/\1)|g')
+              PR_LIST="${PR_LIST}- ${LINKED}"$'\n'
             done < <(git log main..master --oneline --no-merges | head -20)
           fi
 
