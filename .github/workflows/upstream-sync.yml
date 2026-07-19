@@ -82,6 +82,9 @@ jobs:
         if: steps.check_diff.outputs.has_diff == 'true'
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT }}
+          # upstream リモートがあると gh は fork 元 (togatoga/karukan) を PR の
+          # 対象に解決してしまうため、自リポジトリに明示的に固定する
+          GH_REPO: ${{ github.repository }}
           NEW_ENTRIES: ${{ steps.collect_prs.outputs.pr_list }}
         run: |
           EXISTING_PR=$(gh pr list --base main --head master --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
