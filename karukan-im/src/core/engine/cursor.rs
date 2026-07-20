@@ -37,10 +37,7 @@ impl InputMethodEngine {
     /// Similarly, moving the cursor to right after "k" reclaims it so
     /// typing "a" produces "か" instead of inserting a separate "あ".
     fn reclaim_passthrough_before_cursor(&mut self) {
-        if matches!(
-            self.mode.current(),
-            InputMode::Alphabet | InputMode::Emoji
-        ) {
+        if matches!(self.mode.current(), InputMode::Alphabet | InputMode::Emoji) {
             return;
         }
         if self.input_buf.cursor_pos == 0 {
@@ -51,14 +48,13 @@ impl InputMethodEngine {
             .text
             .chars()
             .nth(self.input_buf.cursor_pos - 1);
-        if let Some(ch) = prev_char {
-            if ch.is_ascii_alphabetic()
-                && self.converters.romaji.can_start_sequence(ch)
-            {
-                self.input_buf.remove_char_before_cursor();
-                self.converters.romaji.reset();
-                let _event = self.converters.romaji.push(ch);
-            }
+        if let Some(ch) = prev_char
+            && ch.is_ascii_alphabetic()
+            && self.converters.romaji.can_start_sequence(ch)
+        {
+            self.input_buf.remove_char_before_cursor();
+            self.converters.romaji.reset();
+            let _event = self.converters.romaji.push(ch);
         }
     }
 

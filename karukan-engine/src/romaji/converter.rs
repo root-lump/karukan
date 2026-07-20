@@ -227,13 +227,12 @@ impl RomajiConverter {
             // Example: "ks" → output="k", buffer="s".  Backspace removes
             // "s"; without the reclaim the "k" stays committed and a
             // subsequent "i" would produce "kい" instead of "き".
-            if self.buffer.is_empty() {
-                if let Some(last_char) = self.output.chars().next_back() {
-                    if self.can_start_sequence(last_char) {
-                        self.output.pop();
-                        self.buffer.push(last_char);
-                    }
-                }
+            if self.buffer.is_empty()
+                && let Some(last_char) = self.output.chars().next_back()
+                && self.can_start_sequence(last_char)
+            {
+                self.output.pop();
+                self.buffer.push(last_char);
             }
             BackspaceResult::RemovedBuffer(ch)
         } else if let Some(ch) = self.output.pop() {
@@ -246,9 +245,7 @@ impl RomajiConverter {
     /// Whether `ch` could be the first character of a romaji sequence
     /// (i.e. it has children in the conversion trie).
     pub fn can_start_sequence(&self, ch: char) -> bool {
-        self.trie
-            .children
-            .contains_key(&ch.to_ascii_lowercase())
+        self.trie.children.contains_key(&ch.to_ascii_lowercase())
     }
 
     /// Get the current output
