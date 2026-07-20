@@ -26,6 +26,8 @@ Branch roles:
 
 Fork-only deviations from upstream to be aware of when syncing: the Space/Tab conversion-role split (`prediction` / `swap_space_tab` in config.toml) intentionally replaces upstream's "predictive candidates on Space, learning-skip on Tab" behavior, and upstream tests asserting that behavior are adapted (predictions surface via the prediction key instead).
 
+**`gh` CLI default repository**: `gh repo set-default` must be set to **`root-lump/karukan`** (the fork). If it points to `togatoga/karukan` (upstream), `gh pr create` without an explicit `--repo` flag will open the PR against upstream — leaking fork-only changes. Verify with `gh repo set-default --view` before creating a PR; if it shows the upstream repo, run `gh repo set-default root-lump/karukan` first. Upstream contribution PRs (branched from `upstream/main`) are the sole exception: pass `--repo togatoga/karukan` explicitly for those.
+
 ## Build and Development Commands
 
 This project uses a Cargo workspace. All commands are run from the repository root.
