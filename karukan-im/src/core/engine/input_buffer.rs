@@ -107,6 +107,19 @@ impl InputBuffer {
         self.debug_assert_spans();
     }
 
+    /// Rewrite the text in place with a character-preserving transform,
+    /// keeping the raw spans as they are.
+    ///
+    /// Only valid for 1:1 character mappings (baking hiragana into katakana on
+    /// leaving katakana mode): the spans still describe the same positions, and
+    /// the keystrokes behind them are unchanged. A transform that added or
+    /// dropped characters would desync the spans, which the assertion below
+    /// catches in debug builds.
+    pub fn map_text(&mut self, f: impl FnOnce(&str) -> String) {
+        self.text = f(&self.text);
+        self.debug_assert_spans();
+    }
+
     /// Index in `spans` where a span starting at kana position `char_pos`
     /// belongs, dissolving the span that `char_pos` falls inside (if any) so
     /// the position becomes a span boundary.
@@ -299,6 +312,15 @@ mod tests {
         assert_eq!(b.raw_prefix(1), None); // inside `kya`
         assert_eq!(b.raw_prefix(2), Some("kya".to_string()));
         assert_eq!(b.raw_prefix(3), Some("kyaku".to_string()));
+    }
+
+    #[test]
+    fn map_text_keeps_the_raw_behind_a_baked_buffer() {
+        let mut b = buf(&[("きゃ", "kya"), ("く", "ku")]);
+        b.map_text(karukan_engine::hiragana_to_katakana);
+        assert_eq!(b.text, "キャク");
+        // Baking to katakana must not cost the keystrokes: F9/F10 still work.
+        assert_eq!(b.raw_text(), "kyaku");
     }
 
     #[test]

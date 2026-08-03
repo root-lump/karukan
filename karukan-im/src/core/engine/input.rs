@@ -531,3 +531,82 @@ impl InputMethodEngine {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use karukan_engine::RomajiConverter;
+
+    /// Feed `input` through a real `RomajiConverter` and collect, per
+    /// keystroke that produced kana, the (kana, raw) pair the engine would
+    /// hand to `InputBuffer::insert`.
+    ///
+    /// Deliberately model-free: this is the romaji layer only, so the result
+    /// never depends on whether a kanji model happens to be available.
+    fn raw_spans_of(input: &str) -> Vec<(String, String)> {
+        let mut romaji = RomajiConverter::new();
+        let mut out = Vec::new();
+        for ch in input.chars() {
+            let prev_output_len = romaji.output().chars().count();
+            let prev_buffer = romaji.buffer().to_string();
+            romaji.push(ch);
+            let raw = consumed_raw(&prev_buffer, ch, romaji.buffer());
+            let new_output_len = romaji.output().chars().count();
+            if new_output_len > prev_output_len {
+                let kana: String = romaji.output().chars().skip(prev_output_len).collect();
+                out.push((kana, raw));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn one_keystroke_per_kana() {
+        assert_eq!(
+            raw_spans_of("aiu"),
+            vec![
+                ("あ".to_string(), "a".to_string()),
+                ("い".to_string(), "i".to_string()),
+                ("う".to_string(), "u".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_keystroke_group_is_one_span() {
+        // `kya` buffers `k` and `ky`, then emits both kana at once.
+        assert_eq!(
+            raw_spans_of("kya"),
+            vec![("きゃ".to_string(), "kya".to_string())]
+        );
+    }
+
+    #[test]
+    fn nn_is_consumed_as_a_pair() {
+        assert_eq!(
+            raw_spans_of("nn"),
+            vec![("ん".to_string(), "nn".to_string())]
+        );
+    }
+
+    #[test]
+    fn passthrough_characters_carry_themselves() {
+        assert_eq!(raw_spans_of("1"), vec![("1".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn buffered_keystrokes_produce_no_span_until_they_convert() {
+        // `k` alone stays in the pending buffer: nothing is inserted yet.
+        assert!(raw_spans_of("k").is_empty());
+    }
+
+    #[test]
+    fn uppercase_input_is_lowercased_like_the_converter() {
+        // `RomajiConverter::push` lowercases, so the recorded raw must match
+        // the buffer it is diffed against.
+        assert_eq!(
+            raw_spans_of("KA"),
+            vec![("か".to_string(), "ka".to_string())]
+        );
+    }
+}

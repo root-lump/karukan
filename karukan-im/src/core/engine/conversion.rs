@@ -981,6 +981,12 @@ impl InputMethodEngine {
     /// rather than dropping the row in place: dedup hid any
     /// model/dictionary/fallback copy of the same surface behind the learning
     /// entry, and only a rebuild brings it back.
+    ///
+    /// `conversion_raw` is deliberately kept: the rebuild converts the same
+    /// reading over the same range, so the keystrokes behind it are still the
+    /// ones the user typed and F9/F10 keep working after a history deletion.
+    /// (`form_conversion` is likewise untouched — this path is only reachable
+    /// from a Ctrl chord, which already ended any function-key cycle.)
     fn delete_selected_candidate_from_history(&mut self) -> EngineResult {
         let Some(surface) = self
             .state

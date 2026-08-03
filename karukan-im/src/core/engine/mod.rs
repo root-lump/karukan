@@ -315,7 +315,10 @@ impl InputMethodEngine {
     /// Called when leaving Katakana mode so the preedit doesn't revert.
     fn bake_katakana(&mut self) {
         if !self.input_buf.text.is_empty() {
-            self.input_buf.text = karukan_engine::hiragana_to_katakana(&self.input_buf.text);
+            // 1:1 character mapping, so the raw spans keep describing the same
+            // positions and go through untouched (`map_text` asserts that).
+            self.input_buf
+                .map_text(karukan_engine::hiragana_to_katakana);
         }
     }
 

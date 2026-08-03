@@ -1,17 +1,40 @@
 //! Function-key character-form conversion (F6–F10).
 //!
-//! The form-building itself is unit-tested in `engine::form`; these cases
+//! No kanji model is involved anywhere in this file: the composing state is
+//! built by seeding the input buffer directly rather than by typing, so
+//! nothing here loads a model and no assertion depends on model output. The
+//! romaji → keystroke derivation that real typing performs is covered by the
+//! `consumed_raw` unit tests in `engine::input`, and the span bookkeeping by
+//! the `InputBuffer` unit tests.
+//!
+//! The form building itself is unit-tested in `engine::form`; these cases
 //! exercise the state-machine integration — entering conversion, cycling on
-//! repeat, committing, and how the raw keystrokes survive editing.
+//! repeat, committing, and the fallbacks when keystrokes are unavailable.
 
 use super::*;
 
-/// Type each character of `input` into a fresh engine.
-fn typing(input: &str) -> InputMethodEngine {
+/// Engine in Composing state whose buffer holds `kana`, recorded as having
+/// been produced by the keystrokes `raw` (one span, as one insertion would).
+fn composing(kana: &str, raw: &str) -> InputMethodEngine {
     let mut engine = InputMethodEngine::new();
-    for ch in input.chars() {
-        engine.process_key(&press(ch));
-    }
+    engine.input_buf.insert(kana, raw);
+    engine.state = InputState::Composing {
+        preedit: Preedit::with_text_underlined(kana),
+        romaji_buffer: String::new(),
+    };
+    engine
+}
+
+/// Engine in Composing state with no tracked keystrokes — the state the
+/// buffer is left in after a cancelled conversion or an edit inside a
+/// multi-kana span.
+fn composing_without_raw(kana: &str) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::new();
+    engine.input_buf.set_text_kana_raw(kana);
+    engine.state = InputState::Composing {
+        preedit: Preedit::with_text_underlined(kana),
+        romaji_buffer: String::new(),
+    };
     engine
 }
 
@@ -33,8 +56,7 @@ fn commit_text(result: &EngineResult) -> Option<String> {
 
 #[test]
 fn f7_converts_to_full_katakana_and_enter_commits_it() {
-    let mut engine = typing("aiueo");
-    assert_eq!(preedit_text(&engine), "あいうえお");
+    let mut engine = composing("あいうえお", "aiueo");
 
     let result = engine.process_key(&press_key(Keysym::F7));
     assert!(result.consumed);
@@ -52,14 +74,14 @@ fn f7_converts_to_full_katakana_and_enter_commits_it() {
 
 #[test]
 fn f8_converts_to_half_katakana() {
-    let mut engine = typing("aiueo");
+    let mut engine = composing("あいうえお", "aiueo");
     engine.process_key(&press_key(Keysym::F8));
     assert_eq!(preedit_text(&engine), "ｱｲｳｴｵ");
 }
 
 #[test]
 fn f6_returns_to_hiragana_after_f7() {
-    let mut engine = typing("aiueo");
+    let mut engine = composing("あいうえお", "aiueo");
     engine.process_key(&press_key(Keysym::F7));
     assert_eq!(preedit_text(&engine), "アイウエオ");
 
@@ -69,7 +91,7 @@ fn f6_returns_to_hiragana_after_f7() {
 
 #[test]
 fn f10_transliterates_the_typed_romaji_and_cycles_case() {
-    let mut engine = typing("aiu");
+    let mut engine = composing("あいう", "aiu");
 
     engine.process_key(&press_key(Keysym::F10));
     assert_eq!(preedit_text(&engine), "aiu");
@@ -87,7 +109,7 @@ fn f10_transliterates_the_typed_romaji_and_cycles_case() {
 
 #[test]
 fn f9_produces_full_width_alphanumerics() {
-    let mut engine = typing("aiu");
+    let mut engine = composing("あいう", "aiu");
 
     engine.process_key(&press_key(Keysym::F9));
     assert_eq!(preedit_text(&engine), "ａｉｕ");
@@ -98,7 +120,7 @@ fn f9_produces_full_width_alphanumerics() {
 
 #[test]
 fn switching_function_keys_restarts_the_cycle() {
-    let mut engine = typing("aiu");
+    let mut engine = composing("あいう", "aiu");
 
     engine.process_key(&press_key(Keysym::F10));
     engine.process_key(&press_key(Keysym::F10));
@@ -115,58 +137,27 @@ fn switching_function_keys_restarts_the_cycle() {
 
 #[test]
 fn multi_kana_keystrokes_are_tracked_as_one_unit() {
-    // `kya` produces two kana from three keystrokes.
-    let mut engine = typing("kya");
-    assert_eq!(preedit_text(&engine), "きゃ");
-
+    // `kya` produces two kana from three keystrokes, recorded as one span.
+    let mut engine = composing("きゃ", "kya");
     engine.process_key(&press_key(Keysym::F10));
     assert_eq!(preedit_text(&engine), "kya");
 }
 
 #[test]
-fn editing_inside_a_keystroke_group_falls_back_to_kana() {
-    let mut engine = typing("kya");
-    // Backspace removes `ゃ`, which splits the `kya` group — the keystrokes
-    // behind the surviving `き` can no longer be attributed, so F10 shows the
-    // kana itself.
-    engine.process_key(&press_key(Keysym::BACKSPACE));
-    assert_eq!(preedit_text(&engine), "き");
-
+fn alphanumeric_keys_fall_back_to_kana_without_keystrokes() {
+    // After an edit inside a keystroke group (or a cancelled conversion) the
+    // keystrokes are gone, so F10 can only show the kana.
+    let mut engine = composing_without_raw("き");
     engine.process_key(&press_key(Keysym::F10));
     assert_eq!(preedit_text(&engine), "き");
-}
-
-#[test]
-fn backspace_over_a_whole_group_keeps_the_remaining_raw() {
-    let mut engine = typing("kyaku");
-    assert_eq!(preedit_text(&engine), "きゃく");
-
-    // `く` is its own group, so removing it leaves `kya` intact.
-    engine.process_key(&press_key(Keysym::BACKSPACE));
-    engine.process_key(&press_key(Keysym::F10));
-    assert_eq!(preedit_text(&engine), "kya");
-}
-
-#[test]
-fn f10_after_a_mid_buffer_insert_keeps_the_untouched_raw() {
-    let mut engine = typing("aiu");
-    // Move the caret between `あ` and `い`, then type `k`+`a`.
-    engine.process_key(&press_key(Keysym::LEFT));
-    engine.process_key(&press_key(Keysym::LEFT));
-    engine.process_key(&press('k'));
-    engine.process_key(&press('a'));
-    assert_eq!(preedit_text(&engine), "あかいう");
-
-    engine.process_key(&press_key(Keysym::F10));
-    assert_eq!(preedit_text(&engine), "akaiu");
 }
 
 #[test]
 fn function_keys_work_during_conversion() {
-    let mut engine = typing("aiueo");
-    // No model is loaded, so Space falls back to kana candidates — enough to
-    // put the engine in the Conversion state.
-    engine.process_key(&press_key(Keysym::SPACE));
+    // Enter Conversion via F6, then switch the form — the path a user takes
+    // when they convert first and change their mind about the character form.
+    let mut engine = composing("あいうえお", "aiueo");
+    engine.process_key(&press_key(Keysym::F6));
     assert!(matches!(engine.state(), InputState::Conversion { .. }));
 
     engine.process_key(&press_key(Keysym::F7));
@@ -186,7 +177,7 @@ fn function_keys_pass_through_from_the_empty_state() {
 
 #[test]
 fn modified_function_key_chords_pass_through() {
-    let mut engine = typing("aiueo");
+    let mut engine = composing("あいうえお", "aiueo");
     let result = engine.process_key(&press_ctrl(Keysym::F7));
     assert!(
         !result.consumed,
@@ -197,13 +188,11 @@ fn modified_function_key_chords_pass_through() {
 
 #[test]
 fn committing_a_form_conversion_is_recorded_in_learning() {
-    let mut engine = InputMethodEngine::new();
+    let mut engine = composing("あいうえお", "aiueo");
     engine.learning = Some(karukan_engine::LearningCache::new(
         karukan_engine::LearningConfig::default(),
     ));
-    for ch in "aiueo".chars() {
-        engine.process_key(&press(ch));
-    }
+
     engine.process_key(&press_key(Keysym::F7));
     engine.process_key(&press_key(Keysym::RETURN));
 
@@ -218,7 +207,8 @@ fn committing_a_form_conversion_is_recorded_in_learning() {
 #[test]
 fn alphabet_mode_input_gets_width_variants() {
     let mut engine = InputMethodEngine::new();
-    // Shift+letter enters alphabet mode and types uppercase directly.
+    // Shift+letter enters alphabet mode and types uppercase directly. Latin
+    // input skips the converter entirely, so no model is involved.
     engine.process_key(&press_shift('a'));
     engine.process_key(&press_shift('b'));
     engine.process_key(&press_shift('c'));
@@ -233,11 +223,19 @@ fn alphabet_mode_input_gets_width_variants() {
 
 #[test]
 fn escape_after_a_form_conversion_returns_to_the_reading() {
-    let mut engine = typing("aiu");
+    let mut engine = composing("あいう", "aiu");
     engine.process_key(&press_key(Keysym::F7));
     assert_eq!(preedit_text(&engine), "アイウ");
 
     engine.process_key(&press_key(Keysym::ESCAPE));
     assert_eq!(preedit_text(&engine), "あいう");
     assert!(matches!(engine.state(), InputState::Composing { .. }));
+}
+
+#[test]
+fn form_conversion_of_a_katakana_reading_normalizes_to_hiragana() {
+    // Katakana mode bakes the buffer to katakana; F6 must still reach kana.
+    let mut engine = composing("アイウ", "aiu");
+    engine.process_key(&press_key(Keysym::F6));
+    assert_eq!(preedit_text(&engine), "あいう");
 }
