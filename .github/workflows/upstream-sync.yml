@@ -3,11 +3,23 @@ name: Upstream Sync
 on:
   schedule:
     - cron: '0 0 * * *'  # 毎日 UTC 0:00
+  push:
+    # main が進んだら upstream-sync を新しい main の上に作り直し、PR body も
+    # 最新の main..master に合わせ直す。このワークフローが push するのは
+    # master（API 経由）と upstream-sync だけなので、自己ループはしない。
+    branches:
+      - main
   workflow_dispatch:  # 手動実行も可能
 
 permissions:
   contents: write
   pull-requests: write
+
+# schedule と push が重なっても upstream-sync の force push と PR 更新が
+# 競合しないよう直列化する
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -68,11 +80,16 @@ jobs:
           # subject 中の "(#N)" はそのままだと自リポジトリの PR として誤リンク
           # されるため、redirect.github.com 経由の upstream リンクに変換する
           if [ -z "$PR_LIST" ]; then
+            TOTAL=$(git log main..origin/master --oneline --no-merges | wc -l)
             PR_LIST="(マージコミットなし。コミット一覧:)"$'\n'
             while IFS= read -r line; do
               LINKED=$(echo "$line" | sed -E 's|#([0-9]+)|[#\1](https://redirect.github.com/togatoga/karukan/pull/\1)|g')
               PR_LIST="${PR_LIST}- ${LINKED}"$'\n'
             done < <(git log main..origin/master --oneline --no-merges | head -20)
+            # 一覧は 20 件で打ち切るため、隠れた分があることを明示する
+            if [ "$TOTAL" -gt 20 ]; then
+              PR_LIST="${PR_LIST}- ...他 $((TOTAL - 20)) 件"$'\n'
+            fi
           fi
 
           # multiline output
@@ -99,42 +116,26 @@ jobs:
           # fork リポジトリでは gh が fork 元 (togatoga/karukan) を PR の対象に
           # 解決してしまうため、自リポジトリに明示的に固定する
           GH_REPO: ${{ github.repository }}
-          NEW_ENTRIES: ${{ steps.collect_prs.outputs.pr_list }}
+          PR_ENTRIES: ${{ steps.collect_prs.outputs.pr_list }}
         run: |
-          EXISTING_PR=$(gh pr list --base main --head upstream-sync --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
-
-          if [ -z "$EXISTING_PR" ]; then
-            # 新規 PR 作成
-            BODY="## Upstream Changes
+          # body は毎回 main..origin/master から作り直す。
+          # 以前は既存 body への追記方式だったが、main..origin/master は
+          # 「main に未取り込みの upstream コミット全部」を毎回返すため、
+          # PR がマージされるまで同じコミットが日付セクションごとに再掲されていた。
+          BODY="## Upstream Changes
 
           upstream (togatoga/karukan) からの変更を main に取り込む PR です。
 
           ### 含まれる upstream PR
 
-          ${NEW_ENTRIES}"
+          ${PR_ENTRIES}"
+          TITLE="upstream sync: $(date -u +%Y-%m-%d)"
+
+          EXISTING_PR=$(gh pr list --base main --head upstream-sync --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [ -z "$EXISTING_PR" ]; then
             gh pr create --base main --head upstream-sync \
-              --title "upstream sync: $(date -u +%Y-%m-%d)" \
-              --body "$BODY"
+              --title "$TITLE" --body "$BODY"
           else
-            # 既存 PR の body に追記（重複排除）
-            CURRENT_BODY=$(gh pr view "$EXISTING_PR" --json body --jq '.body')
-
-            # 既に含まれている PR 番号を除外して新規分のみ追記
-            NEW_ONLY=""
-            while IFS= read -r entry; do
-              if [ -n "$entry" ] && ! echo "$CURRENT_BODY" | grep -qF "$entry"; then
-                NEW_ONLY="${NEW_ONLY}${entry}"$'\n'
-              fi
-            done <<< "$NEW_ENTRIES"
-
-            if [ -n "$NEW_ONLY" ]; then
-              UPDATED_BODY="${CURRENT_BODY}
-
-          ---
-          **$(date -u +%Y-%m-%d) 追加分:**
-
-          ${NEW_ONLY}"
-              gh pr edit "$EXISTING_PR" --body "$UPDATED_BODY" \
-                --title "upstream sync: $(date -u +%Y-%m-%d)"
-            fi
+            gh pr edit "$EXISTING_PR" --title "$TITLE" --body "$BODY"
           fi
