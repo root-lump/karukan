@@ -23,6 +23,10 @@ on:
       - '.github/workflows/fcitx5-integration-test.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   fcitx5-integration:
     name: fcitx5 Addon Integration Test
