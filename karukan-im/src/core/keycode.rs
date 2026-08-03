@@ -44,6 +44,16 @@ impl Keysym {
     /// keyboards.
     pub const HENKAN: Keysym = Keysym(0xff23);
 
+    // Function keys carrying the character-form conversions of a Japanese
+    // IME (the mozc / MS-IME keymap): ひらがな, 全角カタカナ, 半角カタカナ,
+    // 全角英数, 半角英数. The macOS frontend maps its virtual key codes onto
+    // these same XKB values (see karukan-macos KeyCodeMap.swift).
+    pub const F6: Keysym = Keysym(0xffc3);
+    pub const F7: Keysym = Keysym(0xffc4);
+    pub const F8: Keysym = Keysym(0xffc5);
+    pub const F9: Keysym = Keysym(0xffc6);
+    pub const F10: Keysym = Keysym(0xffc7);
+
     // Space
     pub const SPACE: Keysym = Keysym(0x0020);
 

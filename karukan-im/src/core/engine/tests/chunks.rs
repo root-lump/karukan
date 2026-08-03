@@ -90,7 +90,9 @@ fn test_katakana_word_with_prolonged_mark_stays_one_chunk() {
     // Japanese, so it must NOT be split into latin chunks.
     let mut engine = make_chunk_engine(40);
     engine.input_buf.clear();
-    engine.input_buf.insert("スーパーマーケット");
+    engine
+        .input_buf
+        .insert("スーパーマーケット", "スーパーマーケット");
     engine.chunked_auto_suggest();
     let readings: Vec<&str> = engine.chunks.iter().map(|c| c.reading.as_str()).collect();
     assert_eq!(readings, vec!["スーパーマーケット"]);
@@ -103,7 +105,7 @@ fn test_chunks_break_at_punctuation() {
     // non-Japanese chunk, separating the Japanese clauses around it.
     let mut engine = make_chunk_engine(40);
     engine.input_buf.clear();
-    engine.input_buf.insert("あ、いう。え");
+    engine.input_buf.insert("あ、いう。え", "あ、いう。え");
     engine.chunked_auto_suggest();
 
     let readings: Vec<&str> = engine.chunks.iter().map(|c| c.reading.as_str()).collect();
@@ -180,7 +182,7 @@ fn test_current_chunk_index_with_variable_length_chunks() {
     // division.
     let mut engine = make_chunk_engine(40);
     engine.input_buf.clear();
-    engine.input_buf.insert("は、じ。め"); // chunks ["は", "、", "じ", "。", "め"]
+    engine.input_buf.insert("は、じ。め", "は、じ。め"); // chunks ["は", "、", "じ", "。", "め"]
     engine.chunked_auto_suggest();
     assert_eq!(engine.chunks.len(), 5);
 

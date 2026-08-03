@@ -7,6 +7,7 @@ mod chunk;
 mod conversion;
 mod cursor;
 mod display;
+mod form;
 mod init;
 mod input;
 mod input_buffer;
@@ -31,6 +32,7 @@ use super::keycode::{KeyEvent, Keysym};
 use super::preedit::{Preedit, PreeditSegment};
 use super::state::InputState;
 use crate::config::settings::Settings;
+use form::ConversionForm;
 
 /// A conversion candidate tagged with its source and an optional description.
 ///
@@ -147,6 +149,16 @@ pub struct InputMethodEngine {
     /// yet committed to the application. Left arrow pops the last entry
     /// to go back.
     confirmed_segments: Vec<ConvertedSegment>,
+    /// Character form applied by the last function key (F6–F10), or None
+    /// when the last key was something else. Pressing the same function key
+    /// again while this is set advances within its candidate list, which is
+    /// how F9/F10 cycle through lower/upper/capitalized.
+    form_conversion: Option<ConversionForm>,
+    /// Raw keystrokes behind the reading currently being converted, kept so
+    /// F9/F10 can transliterate what was typed rather than the kana. None
+    /// once the conversion boundary moves and the keystrokes can no longer be
+    /// attributed to the selected range.
+    conversion_raw: Option<String>,
     /// Already-converted segments to the RIGHT of the current one, created
     /// when Left arrow steps back over them, ordered left to right. Right
     /// arrow pops the front entry to re-enter it with its previous selection
@@ -175,6 +187,8 @@ impl InputMethodEngine {
             dicts: Dictionaries::default(),
             learning: None,
             conversion_tail: None,
+            form_conversion: None,
+            conversion_raw: None,
             confirmed_segments: Vec::new(),
             upcoming_segments: Vec::new(),
         }
@@ -248,6 +262,8 @@ impl InputMethodEngine {
         self.live.text.clear();
         self.chunks.clear();
         self.conversion_tail = None;
+        self.form_conversion = None;
+        self.conversion_raw = None;
         self.confirmed_segments.clear();
         self.upcoming_segments.clear();
         self.metrics = ConversionMetrics::default();
@@ -308,6 +324,10 @@ impl InputMethodEngine {
         if self.converters.romaji.buffer().is_empty() {
             return;
         }
+        // The keystrokes still sitting in the romaji buffer are exactly what
+        // produced whatever the flush emits, so they become the raw of the
+        // inserted span (see `InputBuffer`).
+        let raw = self.converters.romaji.buffer().to_string();
         let prev_output_len = self.converters.romaji.output().chars().count();
         let _flushed = self.converters.romaji.flush();
         // flush() appends converted buffer to output internally
@@ -319,7 +339,7 @@ impl InputMethodEngine {
             .skip(prev_output_len)
             .collect();
         if !new_from_flush.is_empty() {
-            self.input_buf.insert(&new_from_flush);
+            self.input_buf.insert(&new_from_flush, &raw);
         }
     }
 
@@ -462,6 +482,17 @@ impl InputMethodEngine {
         {
             return self.toggle_live_conversion();
         }
+
+        // F6–F10: character-form conversion (ひらがな / カタカナ / 英数),
+        // the standard Japanese-IME keymap. A modified chord is left alone —
+        // it may be an application or desktop shortcut.
+        if let Some(form) = ConversionForm::from_keysym(key.keysym)
+            && !key.modifiers.any()
+        {
+            return self.convert_to_form(form);
+        }
+        // Anything else ends the F9/F10 case cycle.
+        self.form_conversion = None;
 
         // Reset adaptive model flag when starting a new word (first key in Empty state)
         if matches!(self.state, InputState::Empty) {

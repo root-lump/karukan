@@ -30,7 +30,7 @@ pub use half_katakana::HalfWidthKatakanaRewriter;
 pub use number::NumberRewriter;
 pub use symbol::{SymbolRewriter, description};
 
-use crate::kana::{ascii_to_fullwidth_char, fullwidth_to_ascii_char};
+use crate::kana::{ascii_to_fullwidth, ascii_to_halfwidth};
 
 /// True iff every character is a halfwidth (`0-9`) or fullwidth (`０-９`)
 /// decimal digit, and the string is non-empty. Shared gate for digit-only
@@ -44,12 +44,12 @@ pub(crate) fn is_pure_digit(text: &str) -> bool {
 
 /// Convert every full-width ASCII alphanumeric character to half-width.
 pub(crate) fn to_halfwidth(text: &str) -> String {
-    text.chars().map(fullwidth_to_ascii_char).collect()
+    ascii_to_halfwidth(text)
 }
 
 /// Convert every half-width ASCII alphanumeric character to full-width.
 pub(crate) fn to_fullwidth(text: &str) -> String {
-    text.chars().map(ascii_to_fullwidth_char).collect()
+    ascii_to_fullwidth(text)
 }
 
 /// One result of rewriting: the variant text and an optional description used

@@ -10,6 +10,7 @@ mod chunks;
 mod conversion;
 mod cursor;
 mod emoji;
+mod function_keys;
 mod katakana;
 mod learning;
 mod live_conversion;
