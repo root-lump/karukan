@@ -92,6 +92,18 @@ pub struct EngineConfig {
     pub prediction: PredictionMode,
     /// Swap the conversion roles of Space and Tab
     pub swap_space_tab: bool,
+    /// Whether the kana-kanji model may be lazily initialized from the input
+    /// path (`ensure_kanji_converter` during live conversion,
+    /// `build_conversion_candidates` on explicit conversion).
+    ///
+    /// Always true in production; defaults to false in `cfg(test)` builds.
+    /// Both call sites re-attempt initialization on *every* keystroke while
+    /// the converter is missing, so leaving them enabled in unit tests makes
+    /// each test download and load a real GGUF model — the single largest
+    /// cost in `cargo test -p karukan-im`, and a source of non-determinism
+    /// (behavior depends on whether the machine happens to have a cached
+    /// model). An explicit `init_kanji_converter*` call is unaffected.
+    pub lazy_model_init: bool,
 }
 
 impl EngineConfig {
@@ -114,6 +126,9 @@ impl EngineConfig {
             live_conversion: settings.conversion.live_conversion,
             prediction: settings.conversion.prediction,
             swap_space_tab: settings.conversion.swap_space_tab,
+            // Built from real user settings — always allow lazy model init,
+            // even when karukan-im itself is compiled in test configuration.
+            lazy_model_init: true,
         }
     }
 }
@@ -132,6 +147,7 @@ impl Default for EngineConfig {
             live_conversion: false,
             prediction: PredictionMode::default(),
             swap_space_tab: false,
+            lazy_model_init: !cfg!(test),
         }
     }
 }

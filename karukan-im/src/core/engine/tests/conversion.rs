@@ -18,12 +18,9 @@ fn commit_text_of(result: &EngineResult) -> Option<String> {
 /// mapped to themselves. Learning candidates are always inserted first
 /// (see `build_conversion_candidates`'s "Learning → ... " priority), so the
 /// default-selected candidate is guaranteed to equal the reading regardless
-/// of whether a real kanji model happens to be loaded on the machine running
-/// the test (unlike `engine.converters.kanji = None`, which only skips the
-/// *initial* load — `build_conversion_candidates` re-triggers
-/// `init_kanji_converter` on every call and will pick up a cached model if
-/// one is available locally, making plain hiragana-fallback assumptions
-/// non-deterministic).
+/// of any model. (`EngineConfig::lazy_model_init` already defaults to false
+/// under `cfg(test)` so no model is loaded, but seeding learning keeps the
+/// expectation independent of that default.)
 fn engine_in_partial_conversion() -> InputMethodEngine {
     let mut engine = InputMethodEngine::new();
     let mut cache = LearningCache::new(LearningConfig::default());
