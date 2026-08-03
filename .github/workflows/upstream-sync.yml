@@ -101,13 +101,29 @@ jobs:
 
       - name: Build sync branch
         if: steps.check_diff.outputs.has_diff == 'true'
+        id: build_branch
         run: |
           # master はミラーなので PR の head にせず、main から作り直した
           # 専用ブランチに master をマージして常に main に追従させる
-          # （コンフリクト時はここで失敗し、手動解消が必要なことに気づける）
           git checkout -B upstream-sync origin/main
-          git merge --no-edit origin/master
-          git push -f origin upstream-sync
+          if git merge --no-edit origin/master; then
+            git push -f origin upstream-sync
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # コンフリクト時はブランチを作り直せない。ここで即失敗させると
+          # 「なぜ PR が更新されないのか」が Actions のログを見ないと分からない
+          # ので、衝突したファイルを PR body に載せてから最後のステップで
+          # 失敗させる。既存の upstream-sync はそのまま残す。
+          git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+          git merge --abort
+          echo "conflict=true" >> "$GITHUB_OUTPUT"
+          {
+            echo "conflict_files<<EOF"
+            cat /tmp/conflicts.txt
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create or update PR
         if: steps.check_diff.outputs.has_diff == 'true'
@@ -117,12 +133,40 @@ jobs:
           # 解決してしまうため、自リポジトリに明示的に固定する
           GH_REPO: ${{ github.repository }}
           PR_ENTRIES: ${{ steps.collect_prs.outputs.pr_list }}
+          CONFLICT: ${{ steps.build_branch.outputs.conflict }}
+          CONFLICT_FILES: ${{ steps.build_branch.outputs.conflict_files }}
         run: |
+          # コンフリクトしたときは、その事実と衝突ファイル・解消手順を body の
+          # 先頭に出す。upstream-sync ブランチは更新できていないので、PR の
+          # 差分は前回のままである点も含めて明記する。
+          NOTICE=""
+          if [ "$CONFLICT" = "true" ]; then
+            FILE_LIST=$(echo "$CONFLICT_FILES" | sed '/^$/d' | sed 's|^|> - `|; s|$|`|')
+            NOTICE="> [!WARNING]
+          > **コンフリクトが発生しています。手動での解決が必要です。**
+          >
+          > \`main\` に \`master\` を自動マージできなかったため、\`upstream-sync\`
+          > ブランチは更新されていません（この PR の差分は前回の同期時点のままです）。
+          > 手元で解消してから force push してください。
+          >
+          > \`\`\`sh
+          > git fetch origin
+          > git checkout -B upstream-sync origin/main
+          > git merge origin/master   # 衝突を解消してコミット
+          > git push -f origin upstream-sync
+          > \`\`\`
+          >
+          > 衝突したファイル:
+          ${FILE_LIST}
+
+          "
+          fi
+
           # body は毎回 main..origin/master から作り直す。
           # 以前は既存 body への追記方式だったが、main..origin/master は
           # 「main に未取り込みの upstream コミット全部」を毎回返すため、
           # PR がマージされるまで同じコミットが日付セクションごとに再掲されていた。
-          BODY="## Upstream Changes
+          BODY="${NOTICE}## Upstream Changes
 
           upstream (togatoga/karukan) からの変更を main に取り込む PR です。
 
@@ -130,12 +174,34 @@ jobs:
 
           ${PR_ENTRIES}"
           TITLE="upstream sync: $(date -u +%Y-%m-%d)"
+          if [ "$CONFLICT" = "true" ]; then
+            TITLE="$TITLE (コンフリクトあり)"
+          fi
 
           EXISTING_PR=$(gh pr list --base main --head upstream-sync --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
 
-          if [ -z "$EXISTING_PR" ]; then
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" --title "$TITLE" --body "$BODY"
+          elif [ "$CONFLICT" = "true" ]; then
+            # upstream-sync が main と同一なので PR を作れない。次のステップで
+            # ジョブを失敗させるので、ここは通知を諦めて先に進む。
+            echo "コンフリクトのため upstream-sync を更新できず、新規 PR も作成できません。"
+          else
             gh pr create --base main --head upstream-sync \
               --title "$TITLE" --body "$BODY"
-          else
-            gh pr edit "$EXISTING_PR" --title "$TITLE" --body "$BODY"
           fi
+
+      - name: Fail on merge conflict
+        if: steps.build_branch.outputs.conflict == 'true'
+        env:
+          CONFLICT_FILES: ${{ steps.build_branch.outputs.conflict_files }}
+        run: |
+          {
+            echo "## upstream-sync: コンフリクト"
+            echo
+            echo "\`main\` に \`master\` をマージできませんでした。衝突したファイル:"
+            echo
+            echo "$CONFLICT_FILES" | sed '/^$/d' | sed 's|^|- `|; s|$|`|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::main と master のマージがコンフリクトしました。upstream-sync を手動で解消してください。"
+          exit 1
