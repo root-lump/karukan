@@ -275,7 +275,16 @@ impl InputMethodEngine {
             (full_reading, None)
         };
         self.conversion_tail = tail;
-        self.input_buf.text = reading.clone();
+        // Capture the keystrokes behind the converted range before the buffer
+        // is rebuilt from the reading — this is what F9/F10 transliterate while
+        // the conversion is open. A cursor split that falls inside a raw span
+        // yields None, and the function keys fall back to kana.
+        self.conversion_raw = if self.conversion_tail.is_some() {
+            self.input_buf.raw_prefix(cursor)
+        } else {
+            Some(self.input_buf.raw_text())
+        };
+        self.input_buf.set_text_kana_raw(&reading);
 
         // Save auto-suggest/live conversion result before clearing state.
         // This ensures the candidate that was displayed during input is preserved
@@ -381,7 +390,11 @@ impl InputMethodEngine {
     /// Sets up the preedit (highlighted selected text + underlined tail if any),
     /// updates the state, and returns an EngineResult with preedit, candidates,
     /// and aux text actions.
-    fn enter_conversion_state(&mut self, reading: &str, candidates: CandidateList) -> EngineResult {
+    pub(super) fn enter_conversion_state(
+        &mut self,
+        reading: &str,
+        candidates: CandidateList,
+    ) -> EngineResult {
         let selected_text = candidates.selected_text().unwrap_or(reading).to_string();
         let preedit = self.build_conversion_preedit(&selected_text);
 
@@ -882,7 +895,9 @@ impl InputMethodEngine {
         let commit_text = self.finalize_confirmed_segments(text);
 
         self.state = InputState::Empty;
-        self.input_buf.text.clear();
+        self.input_buf.clear();
+        self.conversion_raw = None;
+        self.form_conversion = None;
         self.mode.exit_temporary();
         commit_text
     }
@@ -905,8 +920,11 @@ impl InputMethodEngine {
         let commit_text = self.finalize_confirmed_segments(text);
 
         self.state = InputState::Empty;
-        self.input_buf.text = tail;
-        self.input_buf.cursor_pos = self.input_buf.text.chars().count();
+        // The tail is resumed from its reading alone: the keystrokes that
+        // produced it were consumed by the conversion that just committed.
+        self.input_buf.set_text_kana_raw(&tail);
+        self.conversion_raw = None;
+        self.form_conversion = None;
         self.converters.romaji.reset();
         for ch in self.input_buf.text.chars() {
             self.converters.romaji.push(ch);
@@ -963,6 +981,12 @@ impl InputMethodEngine {
     /// rather than dropping the row in place: dedup hid any
     /// model/dictionary/fallback copy of the same surface behind the learning
     /// entry, and only a rebuild brings it back.
+    ///
+    /// `conversion_raw` is deliberately kept: the rebuild converts the same
+    /// reading over the same range, so the keystrokes behind it are still the
+    /// ones the user typed and F9/F10 keep working after a history deletion.
+    /// (`form_conversion` is likewise untouched — this path is only reachable
+    /// from a Ctrl chord, which already ended any function-key cycle.)
     fn delete_selected_candidate_from_history(&mut self) -> EngineResult {
         let Some(surface) = self
             .state
@@ -1003,6 +1027,8 @@ impl InputMethodEngine {
         if !matches!(self.state, InputState::Conversion { .. }) {
             return EngineResult::not_consumed();
         }
+        self.conversion_raw = None;
+        self.form_conversion = None;
         // Restore full reading including confirmed/upcoming segments and tail
         let mut reading = String::new();
         for seg in &self.confirmed_segments {
@@ -1027,9 +1053,9 @@ impl InputMethodEngine {
                 .with_action(EngineAction::HideAuxText);
         }
 
-        // Set up composed_hiragana with the reading
-        self.input_buf.text = reading.clone();
-        self.input_buf.cursor_pos = self.input_buf.text.chars().count();
+        // Set up composed_hiragana with the reading. The reading is all that
+        // survives a conversion, so the raw keystrokes are gone from here on.
+        self.input_buf.set_text_kana_raw(&reading);
 
         // Reset romaji converter and set output to reading
         self.converters.romaji.reset();
@@ -1060,7 +1086,7 @@ impl InputMethodEngine {
     }
 
     /// Select next candidate
-    fn next_candidate(&mut self) -> EngineResult {
+    pub(super) fn next_candidate(&mut self) -> EngineResult {
         self.navigate_candidate(CandidateList::move_next)
     }
 
@@ -1115,6 +1141,8 @@ impl InputMethodEngine {
         // Record learning for confirmed segments and build the full commit text.
         let commit_text = self.finalize_confirmed_segments(&selected_text);
         self.conversion_tail = None;
+        self.conversion_raw = None;
+        self.form_conversion = None;
 
         self.state = InputState::Empty;
 
@@ -1173,8 +1201,12 @@ impl InputMethodEngine {
         reading: &str,
         preselect: Option<&str>,
     ) -> EngineResult {
-        self.input_buf.text = reading.to_string();
+        // Segment navigation moves the conversion boundary, so the raw
+        // keystrokes can no longer be attributed to this segment.
+        self.input_buf.set_text_kana_raw(reading);
         self.input_buf.cursor_pos = 0;
+        self.conversion_raw = None;
+        self.form_conversion = None;
 
         if reading.is_empty() {
             return EngineResult::consumed();

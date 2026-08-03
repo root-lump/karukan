@@ -2,6 +2,21 @@
 
 use super::*;
 
+/// The keystrokes a single `RomajiConverter::push` consumed, derived from how
+/// much the pending buffer shrank: pushing `a` onto a pending `ky` empties the
+/// buffer and emits `きゃ`, so the consumed raw is `kya`.
+///
+/// `push` lowercases its input, so the pending buffer is already lowercase and
+/// `ch` is lowercased here to match.
+fn consumed_raw(prev_buffer: &str, ch: char, new_buffer: &str) -> String {
+    let attempted = format!("{}{}", prev_buffer, ch.to_ascii_lowercase());
+    let consumed_len = attempted
+        .chars()
+        .count()
+        .saturating_sub(new_buffer.chars().count());
+    attempted.chars().take(consumed_len).collect()
+}
+
 /// Append candidates to `target`, skipping duplicates by text.
 fn append_candidates_dedup(target: &mut Vec<Candidate>, source: Vec<Candidate>) {
     for c in source {
@@ -112,7 +127,9 @@ impl InputMethodEngine {
         if key.modifiers.control_key && key.keysym == Keysym::SPACE {
             self.converters.romaji.reset();
             self.input_buf.clear();
-            self.input_buf.insert("\u{3000}");
+            // Raw is the plain space that was typed, so F10 turns the
+            // full-width space back into a half-width one.
+            self.input_buf.insert("\u{3000}", " ");
             let preedit = self.set_composing_state();
             return EngineResult::consumed()
                 .with_action(EngineAction::UpdatePreedit(preedit))
@@ -197,11 +214,13 @@ impl InputMethodEngine {
         self.input_buf.clear();
 
         if self.mode.current() == InputMode::Alphabet {
-            self.input_buf.insert(&ch.to_string());
+            self.input_buf.insert(&ch.to_string(), &ch.to_string());
         } else {
             let prev_output_len = 0;
             let _event = self.converters.romaji.push(ch);
             let romaji_buffer = self.converters.romaji.buffer().to_string();
+            // Fresh session: the pending buffer started empty.
+            let raw = consumed_raw("", ch, &romaji_buffer);
 
             // PassThrough chars (no romaji rule, e.g. `'`, `;`, `<`, `(`) used to
             // auto-commit immediately, but that prevented users from composing
@@ -222,7 +241,7 @@ impl InputMethodEngine {
                     .chars()
                     .skip(prev_output_len)
                     .collect();
-                self.input_buf.insert(&new_chars);
+                self.input_buf.insert(&new_chars, &raw);
             }
         }
 
@@ -235,7 +254,7 @@ impl InputMethodEngine {
 
     /// Insert a full-width space (U+3000) at cursor position
     pub(super) fn input_fullwidth_space(&mut self) -> EngineResult {
-        self.input_buf.insert("\u{3000}");
+        self.input_buf.insert("\u{3000}", " ");
         self.refresh_input_state()
     }
 
@@ -343,7 +362,7 @@ impl InputMethodEngine {
         // on re-entry just in case start_emoji_mode is ever called while
         // already in Emoji mode.
         self.mode.enter_temporary(InputMode::Emoji);
-        self.input_buf.insert(":");
+        self.input_buf.insert(":", ":");
         self.refresh_input_state()
     }
 
@@ -363,13 +382,15 @@ impl InputMethodEngine {
     /// In alphabet mode, inserts directly; otherwise goes through romaji conversion.
     pub(super) fn input_char(&mut self, ch: char) -> EngineResult {
         if matches!(self.mode.current(), InputMode::Alphabet | InputMode::Emoji) {
-            self.input_buf.insert(&ch.to_string());
+            self.input_buf.insert(&ch.to_string(), &ch.to_string());
             return self.refresh_input_state();
         }
 
         let prev_output_len = self.converters.romaji.output().chars().count();
+        let prev_buffer = self.converters.romaji.buffer().to_string();
         let _event = self.converters.romaji.push(ch);
         let curr_output_len = self.converters.romaji.output().chars().count();
+        let raw = consumed_raw(&prev_buffer, ch, self.converters.romaji.buffer());
 
         // Consume ALL new converter output into composed_hiragana at cursor position.
         // The converter may recursively pass through multiple chars (e.g., "thx" →
@@ -383,7 +404,7 @@ impl InputMethodEngine {
                 .chars()
                 .skip(prev_output_len)
                 .collect();
-            self.input_buf.insert(&new_chars);
+            self.input_buf.insert(&new_chars, &raw);
         }
 
         // PassThrough chars no longer auto-commit. They accumulate in the preedit
@@ -508,5 +529,84 @@ impl InputMethodEngine {
                 .with_action(EngineAction::HideCandidates)
                 .with_action(EngineAction::HideAuxText)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use karukan_engine::RomajiConverter;
+
+    /// Feed `input` through a real `RomajiConverter` and collect, per
+    /// keystroke that produced kana, the (kana, raw) pair the engine would
+    /// hand to `InputBuffer::insert`.
+    ///
+    /// Deliberately model-free: this is the romaji layer only, so the result
+    /// never depends on whether a kanji model happens to be available.
+    fn raw_spans_of(input: &str) -> Vec<(String, String)> {
+        let mut romaji = RomajiConverter::new();
+        let mut out = Vec::new();
+        for ch in input.chars() {
+            let prev_output_len = romaji.output().chars().count();
+            let prev_buffer = romaji.buffer().to_string();
+            romaji.push(ch);
+            let raw = consumed_raw(&prev_buffer, ch, romaji.buffer());
+            let new_output_len = romaji.output().chars().count();
+            if new_output_len > prev_output_len {
+                let kana: String = romaji.output().chars().skip(prev_output_len).collect();
+                out.push((kana, raw));
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn one_keystroke_per_kana() {
+        assert_eq!(
+            raw_spans_of("aiu"),
+            vec![
+                ("あ".to_string(), "a".to_string()),
+                ("い".to_string(), "i".to_string()),
+                ("う".to_string(), "u".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn multi_keystroke_group_is_one_span() {
+        // `kya` buffers `k` and `ky`, then emits both kana at once.
+        assert_eq!(
+            raw_spans_of("kya"),
+            vec![("きゃ".to_string(), "kya".to_string())]
+        );
+    }
+
+    #[test]
+    fn nn_is_consumed_as_a_pair() {
+        assert_eq!(
+            raw_spans_of("nn"),
+            vec![("ん".to_string(), "nn".to_string())]
+        );
+    }
+
+    #[test]
+    fn passthrough_characters_carry_themselves() {
+        assert_eq!(raw_spans_of("1"), vec![("1".to_string(), "1".to_string())]);
+    }
+
+    #[test]
+    fn buffered_keystrokes_produce_no_span_until_they_convert() {
+        // `k` alone stays in the pending buffer: nothing is inserted yet.
+        assert!(raw_spans_of("k").is_empty());
+    }
+
+    #[test]
+    fn uppercase_input_is_lowercased_like_the_converter() {
+        // `RomajiConverter::push` lowercases, so the recorded raw must match
+        // the buffer it is diffed against.
+        assert_eq!(
+            raw_spans_of("KA"),
+            vec![("か".to_string(), "ka".to_string())]
+        );
     }
 }

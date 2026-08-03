@@ -217,9 +217,30 @@ pub fn fullwidth_to_ascii_char(c: char) -> char {
     }
 }
 
+/// Convert every half-width ASCII alphanumeric character in `text` to its
+/// full-width form (`abc1` → `ａｂｃ１`). Other characters pass through.
+pub fn ascii_to_fullwidth(text: &str) -> String {
+    text.chars().map(ascii_to_fullwidth_char).collect()
+}
+
+/// Convert every full-width ASCII alphanumeric character in `text` to its
+/// half-width form (`ａｂｃ１` → `abc1`). Other characters pass through.
+pub fn ascii_to_halfwidth(text: &str) -> String {
+    text.chars().map(fullwidth_to_ascii_char).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_ascii_width_conversions() {
+        assert_eq!(ascii_to_fullwidth("abc1"), "ａｂｃ１");
+        assert_eq!(ascii_to_halfwidth("ＡＢＣ１"), "ABC1");
+        // Non-ASCII passes through untouched.
+        assert_eq!(ascii_to_fullwidth("あa"), "あａ");
+        assert_eq!(ascii_to_halfwidth("あＡ"), "あA");
+    }
 
     #[test]
     fn test_contains_kana() {
