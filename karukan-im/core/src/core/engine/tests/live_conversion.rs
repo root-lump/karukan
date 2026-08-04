@@ -220,11 +220,17 @@ fn test_commit_mid_buffer_ignores_live_text() {
     // Typing away from the end shows the kana display (live text is not
     // faithful there), so Enter must commit what is shown — あdい — and not
     // splice the live text with the mid-buffer pending run (愛d).
+    //
+    // The buffer is seeded rather than typed (`a`, `i`, Left, `d`): replaying
+    // those keystrokes with live conversion on lets the conversion path decide
+    // the intermediate display, which makes the setup depend on whether a
+    // model is loaded. The state that matters here is just "あdい with the
+    // caret after the `d`".
     let mut engine = make_live_conversion_engine();
-    engine.process_key(&press('a'));
-    engine.process_key(&press('i'));
-    engine.process_key(&press_key(Keysym::LEFT));
-    engine.process_key(&press('d'));
+    engine.input_buf.insert("あdい");
+    engine.input_buf.set_cursor(2);
+    let preedit = engine.build_composing_preedit();
+    engine.state = InputState::Composing { preedit };
     assert_eq!(engine.preedit().unwrap().text(), "あdい");
     set_live_text(&mut engine, "愛");
 
@@ -312,11 +318,14 @@ fn test_alphabet_mode_with_kana_keeps_converting() {
 
     // Typing another latin char re-runs refresh_input_state. Because the buffer
     // still has kana, the "preserve display" early-return is bypassed and
-    // conversion runs again; with no model loaded run_auto_suggest returns the
-    // reading itself, so live.text is cleared rather than frozen.
+    // conversion runs again, so the stale display must not survive.
+    //
+    // What the fresh conversion produces is deliberately not asserted: that
+    // depends on whether a model is loaded and on what it emits.
     engine.process_key(&press('b'));
-    assert!(
-        engine.live_text().is_empty(),
+    assert_ne!(
+        engine.live_text(),
+        "亜A",
         "mixed kana buffer must reconvert in alphabet mode, not preserve stale live.text"
     );
 }

@@ -1,3 +1,7 @@
 target/
 .git/
+.github/
 karukan-im/fcitx5/fcitx5-addon/build/
+karukan-im/macos/build/
+*.gguf
+dict.bin
