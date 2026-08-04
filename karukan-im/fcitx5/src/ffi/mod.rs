@@ -127,9 +127,19 @@ impl KarukanEngine {
     fn new() -> Self {
         let settings = Settings::load().unwrap_or_default();
         let config = EngineConfig::from_settings(&settings);
-        let engine = InputMethodEngine::with_config(config);
+        Self::with_settings_and_config(settings, config)
+    }
+
+    /// Build an engine with an explicitly supplied config instead of deriving
+    /// it from `settings`.
+    ///
+    /// Tests use this to pin `lazy_model_init` / `live_conversion`. From this
+    /// crate `karukan-im` is an ordinary dependency, so its `cfg!(test)`
+    /// default for `lazy_model_init` does not apply here, and
+    /// `EngineConfig::from_settings` enables lazy model init unconditionally.
+    fn with_settings_and_config(settings: Settings, config: EngineConfig) -> Self {
         Self {
-            engine,
+            engine: InputMethodEngine::with_config(config),
             settings,
             preedit: PreeditCache::default(),
             candidates: CandidateCache::default(),
