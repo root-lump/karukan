@@ -9,14 +9,13 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/karukan-im-ci.yml'
+  # No `paths` filter here on purpose: a workflow skipped by path filtering
+  # never creates its check runs, so required status checks stay stuck on
+  # "Expected — Waiting for status to be reported" and block the merge. The
+  # same paths live in the `changes` job below instead — a job skipped by
+  # `if:` *does* report, and a skipped check satisfies a required check.
   pull_request:
     branches: [main]
-    paths:
-      - 'karukan-im/core/**'
-      - 'karukan-engine/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/karukan-im-ci.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -27,9 +26,33 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Decides whether this crate's jobs need to run. On pull requests the
+  # remaining jobs are skipped when nothing relevant changed — skipped checks
+  # are reported and count as passing, which a path-filtered trigger cannot do.
+  changes:
+    name: Changes (karukan-im)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - 'karukan-im/core/**'
+              - 'karukan-engine/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/karukan-im-ci.yml'
+
   check:
     name: Check
     runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -42,6 +65,8 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -56,6 +81,8 @@ jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -65,8 +92,13 @@ jobs:
         run: cargo fmt -p karukan-im -- --check
 
   test:
-    name: Test
+    # Qualified with the crate name: karukan-fcitx5 CI has a `Test` job too,
+    # and two identically named checks make the required status check
+    # ambiguous about which one it refers to.
+    name: Test (karukan-im)
     runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
