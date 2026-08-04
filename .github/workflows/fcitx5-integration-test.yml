@@ -11,16 +11,13 @@ on:
       - 'Cargo.lock'
       - 'tests/integration/**'
       - '.github/workflows/fcitx5-integration-test.yml'
+  # No `paths` filter here on purpose: a workflow skipped by path filtering
+  # never creates its check runs, so required status checks stay stuck on
+  # "Expected — Waiting for status to be reported" and block the merge. The
+  # same paths live in the `changes` job below instead — a job skipped by
+  # `if:` *does* report, and a skipped check satisfies a required check.
   pull_request:
     branches: [main]
-    paths:
-      - 'karukan-im/fcitx5/**'
-      - 'karukan-im/core/**'
-      - 'karukan-engine/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - 'tests/integration/**'
-      - '.github/workflows/fcitx5-integration-test.yml'
   workflow_dispatch:
 
 concurrency:
@@ -28,9 +25,35 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Decides whether the integration test needs to run. On pull requests it is
+  # skipped when nothing relevant changed — skipped checks are reported and
+  # count as passing, which a path-filtered trigger cannot do.
+  changes:
+    name: Changes (fcitx5 integration)
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      relevant: ${{ steps.filter.outputs.relevant }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            relevant:
+              - 'karukan-im/fcitx5/**'
+              - 'karukan-im/core/**'
+              - 'karukan-engine/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'tests/integration/**'
+              - '.github/workflows/fcitx5-integration-test.yml'
+
   fcitx5-integration:
     name: fcitx5 Addon Integration Test
     runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@v7
 
