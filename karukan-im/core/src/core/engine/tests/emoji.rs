@@ -8,6 +8,22 @@ fn press_colon() -> KeyEvent {
     KeyEvent::press(Keysym(b':' as u32))
 }
 
+/// Engine part-way through an emoji-mode session, with `query` (the
+/// shortcode *without* its leading `:`) already in the buffer.
+///
+/// The `:` itself still goes through `process_key` because entering emoji
+/// mode is a state transition the engine owns; only the shortcode
+/// characters, which are pure buffer filling, are seeded. Tests whose
+/// subject is the typing itself keep pressing every key.
+fn emoji_query(query: &str) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::new();
+    engine.process_key(&press_colon());
+    engine.input_buf.insert(query);
+    let preedit = engine.build_composing_preedit();
+    engine.state = InputState::Composing { preedit };
+    engine
+}
+
 /// Texts from the most recent ShowCandidates action — auto-suggest
 /// surfaces candidates here rather than parking them in
 /// `engine.state()`, so this is the canonical way to inspect them
@@ -60,12 +76,7 @@ fn emoji_mode_shows_candidates_via_rewriter() {
     // auto-suggest path — inspected via the most recent
     // `ShowCandidates` action since composing-phase candidates aren't
     // parked in `engine.state()`.
-    let mut engine = InputMethodEngine::new();
-    engine.process_key(&press_colon());
-    engine.process_key(&press('s'));
-    engine.process_key(&press('m'));
-    engine.process_key(&press('i'));
-    engine.process_key(&press('l'));
+    let mut engine = emoji_query("smil");
     let last = engine.process_key(&press('e'));
 
     let texts = auto_suggest_texts(&last);
@@ -86,11 +97,7 @@ fn escape_commits_literal_and_exits_emoji_mode() {
     //   * It gives a deliberate way to commit `:smile` literally even
     //     when an emoji match exists, which Enter alone can't do
     //     (Enter on a match commits the emoji).
-    let mut engine = InputMethodEngine::new();
-    engine.process_key(&press_colon());
-    for ch in ['s', 'm', 'i', 'l', 'e'] {
-        engine.process_key(&press(ch));
-    }
+    let mut engine = emoji_query("smile");
     assert_eq!(engine.mode.current(), InputMode::Emoji);
 
     let result = engine.process_key(&press_key(Keysym::ESCAPE));
@@ -103,11 +110,7 @@ fn escape_commits_literal_and_exits_emoji_mode() {
 fn committing_emoji_resets_to_hiragana() {
     // Selecting an emoji candidate then committing must also drop emoji
     // mode so the user's next keypress lands in normal kana input.
-    let mut engine = InputMethodEngine::new();
-    engine.process_key(&press_colon());
-    for ch in ['s', 'm', 'i', 'l', 'e'] {
-        engine.process_key(&press(ch));
-    }
+    let mut engine = emoji_query("smile");
     // Space starts conversion → first candidate selected → Return commits.
     engine.process_key(&press_key(Keysym::SPACE));
     engine.process_key(&press_key(Keysym::RETURN));
@@ -130,11 +133,7 @@ fn enter_on_emoji_query_commits_emoji_not_literal() {
     // phase must commit 😄, not the literal text `:smile`. Otherwise
     // emoji mode is useless — the user would have to explicitly enter
     // the conversion list (Space/Down) before every commit.
-    let mut engine = InputMethodEngine::new();
-    engine.process_key(&press_colon());
-    for ch in ['s', 'm', 'i', 'l', 'e'] {
-        engine.process_key(&press(ch));
-    }
+    let mut engine = emoji_query("smile");
     let result = engine.process_key(&press_key(Keysym::RETURN));
     assert_eq!(commit_text(&result).as_deref(), Some("😄"));
     assert_eq!(engine.mode.current(), InputMode::Hiragana);
@@ -148,11 +147,7 @@ fn conversion_emoji_first_not_literal() {
     // rewriter candidates and `:smile` became the default selection —
     // exactly the noise the user wants suppressed for an explicit
     // emoji-mode session.
-    let mut engine = InputMethodEngine::new();
-    engine.process_key(&press_colon());
-    for ch in ['s', 'm', 'i', 'l', 'e'] {
-        engine.process_key(&press(ch));
-    }
+    let mut engine = emoji_query("smile");
     let result = engine.process_key(&press_key(Keysym::SPACE));
 
     // Selected text on entering Conversion comes from the first
@@ -191,11 +186,7 @@ fn conversion_unknown_emoji_shows_no_literal() {
     // include the literal buffer text. Enter still commits the
     // literal via `commit_composing` as an escape hatch (covered by
     // `enter_on_unknown_emoji_query_commits_literal`).
-    let mut engine = InputMethodEngine::new();
-    engine.process_key(&press_colon());
-    for ch in ['q', 'q', 'q', 'q'] {
-        engine.process_key(&press(ch));
-    }
+    let mut engine = emoji_query("qqqq");
     engine.process_key(&press_key(Keysym::SPACE));
     let texts: Vec<String> = engine
         .candidates()
@@ -213,11 +204,7 @@ fn enter_on_unknown_emoji_query_commits_literal() {
     // `:qqqq` has no emoji match — falling back to the literal buffer
     // text is the only sensible thing to do so the user sees what they
     // typed and can correct it.
-    let mut engine = InputMethodEngine::new();
-    engine.process_key(&press_colon());
-    for ch in ['q', 'q', 'q', 'q'] {
-        engine.process_key(&press(ch));
-    }
+    let mut engine = emoji_query("qqqq");
     let result = engine.process_key(&press_key(Keysym::RETURN));
     assert_eq!(commit_text(&result).as_deref(), Some(":qqqq"));
 }
@@ -231,11 +218,7 @@ fn typing_kiniku_surfaces_muscle_via_silent_n() {
     // strict double-n form (`kinniku`) as triggers, so both queries
     // must reach 💪.
     for query in ["kiniku", "kinniku"] {
-        let mut engine = InputMethodEngine::new();
-        engine.process_key(&press_colon());
-        for ch in query.chars() {
-            engine.process_key(&press(ch));
-        }
+        let mut engine = emoji_query(query);
         let last_show = engine
             .process_key(&press_key(Keysym::SPACE))
             .actions

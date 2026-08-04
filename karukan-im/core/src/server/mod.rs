@@ -45,6 +45,18 @@ impl ImServer {
 
     pub fn with_settings(settings: Settings) -> Self {
         let config = EngineConfig::from_settings(&settings);
+        Self::with_settings_and_config(settings, config)
+    }
+
+    /// Build a server with an explicitly supplied engine config instead of
+    /// deriving it from `settings`.
+    ///
+    /// Tests use this to pin `lazy_model_init` / `live_conversion`:
+    /// `EngineConfig::from_settings` always enables lazy model init (it
+    /// describes a production frontend), so a harness built from `Settings`
+    /// would otherwise load a real GGUF model and let its output decide the
+    /// assertions.
+    pub fn with_settings_and_config(settings: Settings, config: EngineConfig) -> Self {
         Self {
             engine: InputMethodEngine::with_config(config),
             settings: Some(settings),

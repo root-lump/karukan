@@ -112,6 +112,45 @@ cargo fmt --all       # Format all crates
 cargo clippy --workspace  # Lint all crates
 ```
 
+### Test Conventions
+
+Tests must not depend on whether a kana-kanji model is present, nor on what
+that model outputs — retraining or swapping a model must never turn a green
+suite red.
+
+- **Never let an assertion be decided by model output.** Inject the conversion
+  result instead: `set_live_text()` for live conversion, or seed the learning
+  cache so the top candidate is fixed (`tests/conversion.rs::engine_in_partial_conversion`,
+  `tests/live_conversion.rs::make_live_conversion_engine_with_learned`). Where
+  the value genuinely is the model's to decide, assert the invariant instead of
+  the value (e.g. "the stale display is gone", not "the display is empty").
+- **`EngineConfig::lazy_model_init` is the guard, and it only reaches
+  karukan-im's own unit tests** (`!cfg!(test)` in `EngineConfig::default`).
+  `EngineConfig::from_settings` deliberately forces it back to `true` because it
+  describes a production frontend, so any harness built from `Settings` — the
+  JSON-RPC `ImServer`, the fcitx5 `KarukanEngine` — must pin
+  `lazy_model_init: false` itself. Both provide a `with_settings_and_config`
+  constructor for exactly this.
+- **Test harnesses must not read the developer's `config.toml`.** Use
+  `Settings::default()` (the embedded `config/default.toml`), never
+  `Settings::load()` — otherwise results depend on the machine. Set
+  `live_conversion` through `EngineConfig` too; do not send Ctrl+Shift+L, which
+  is a *toggle* and flips the wrong way when the local config already disagrees.
+- **Build composing state directly when the keystrokes are not the subject**:
+  `input_buf.insert(kana)` / `insert_raw(kana, raw)` plus assigning
+  `engine.state` — see `tests/mod.rs::composing_with`,
+  `tests/rewriter.rs::composing_engine`, `tests/chunks.rs`. Keep real key events
+  where the keystroke path *is* what is under test: romaji re-evaluation,
+  pass-through reclaim, cursor editing (`tests/cursor.rs`, `tests/basic.rs`,
+  `tests/passthrough.rs`).
+- **Test romaji conversion itself against `RomajiConverter` directly**, not
+  through the engine.
+- To check a change against a real model, temporarily flip the
+  `lazy_model_init` default in `types.rs` to `true` and run the suite; it should
+  still pass. Revert before committing.
+- As a rule of thumb `cargo test -p karukan-im` finishes in under 2 seconds. If
+  it suddenly takes tens of seconds, something started loading a model.
+
 ## Architecture
 
 ### karukan-engine (`karukan-engine/src/`)
@@ -160,7 +199,7 @@ cargo clippy --workspace  # Lint all crates
   - `mode.rs` — Mode switching (katakana, alphabet, live conversion)
   - `init.rs` — Model loading, dictionary setup, learning cache init
   - `strategy.rs` — Conversion strategy determination and adaptive model selection
-  - `tests.rs` — Engine unit tests
+  - `tests/` — Engine unit tests (see Test Conventions above)
 - `core/preedit.rs` — Preedit composition with cursor support
 - `core/candidate.rs` — Candidate list with pagination support
 - `core/keycode.rs` — Key symbol definitions and key event handling

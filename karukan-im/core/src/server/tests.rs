@@ -2,28 +2,29 @@ use serde_json::{Value, json};
 
 use super::ImServer;
 use crate::config::Settings;
+use crate::core::engine::EngineConfig;
 use crate::core::keycode::Keysym;
 
 // XKB keysyms for common keys (u32 aliases for the JSON payloads below)
 const XKB_KEY_K: u32 = Keysym::KEY_K.0;
 const XKB_KEY_A: u32 = Keysym::KEY_A.0;
-const XKB_KEY_LOWER_L: u32 = Keysym::KEY_L.0;
 const XKB_KEY_RETURN: u32 = Keysym::RETURN.0;
 const XKB_KEY_ESCAPE: u32 = Keysym::ESCAPE.0;
 const XKB_KEY_SPACE: u32 = Keysym::SPACE.0;
 
 fn test_server() -> ImServer {
-    let mut server = ImServer::with_settings(Settings::default());
-    // Disable live conversion (Ctrl+Shift+L) so the preedit stays as
-    // hiragana; live conversion would require a loaded model.
-    request(
-        &mut server,
-        json!({"jsonrpc":"2.0","id":0,"method":"process_key","params":{
-            "keysym": XKB_KEY_LOWER_L,
-            "modifiers": {"control": true, "shift": true}
-        }}),
-    );
-    server
+    // Never derive the config from `Settings` alone: `from_settings` enables
+    // lazy model init, and the embedded defaults enable live conversion, so
+    // the server would load a real model and let its output decide these
+    // assertions. Pin both here instead — and set live conversion through the
+    // config rather than by sending Ctrl+Shift+L, which is a *toggle*.
+    let settings = Settings::default();
+    let config = EngineConfig {
+        live_conversion: false,
+        lazy_model_init: false,
+        ..EngineConfig::from_settings(&settings)
+    };
+    ImServer::with_settings_and_config(settings, config)
 }
 
 /// Send a request value and return the parsed response.
@@ -161,8 +162,9 @@ fn test_select_candidate_commits_page_candidate() {
     press(&mut server, XKB_KEY_K);
     press(&mut server, XKB_KEY_A);
 
-    // Space starts conversion; without a model the candidates come from
-    // the hiragana/katakana fallback and the rewriter.
+    // Space starts conversion. `test_server` pins `lazy_model_init: false`,
+    // so no model is consulted and the candidates come from the
+    // hiragana/katakana fallback and the rewriter.
     let resp = press(&mut server, XKB_KEY_SPACE);
     let shows = actions_of(&resp, "show_candidates");
     let first_text = shows.last().unwrap()["candidates"][0]["text"].clone();
