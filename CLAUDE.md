@@ -4,13 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-karukan is a Japanese Input Method system for Linux and macOS, consisting of four Rust crates and a Swift package:
+karukan is a Japanese Input Method system for Linux and macOS, consisting of four Rust crates and a Swift package. The IME core and its platform frontends are grouped under `karukan-im/`:
 
-- **karukan-engine**: Core library — romaji-to-hiragana conversion, neural kana-kanji conversion via llama.cpp, system dictionary, learning cache, candidate rewriter (width/case/symbol variants)
-- **karukan-cli**: CLI tools and server — dictionary builder, Sudachi converter, dict viewer, AJIMEE-Bench, HTTP API server
-- **karukan-im**: Shared IME engine state machine (Empty → Composing → Conversion) and `karukan-imserver` stdio JSON-RPC server (macOS binary bundled in karukan-macos)
-- **karukan-fcitx5**: fcitx5 Linux frontend — C FFI (`src/ffi/`) and C++ addon (`fcitx5-addon/`) that wrap karukan-im
-- **karukan-macos**: Swift/InputMethodKit frontend that spawns `karukan-imserver` as a bundled child process
+- **karukan-engine** (`karukan-engine/`): Core library — romaji-to-hiragana conversion, neural kana-kanji conversion via llama.cpp, system dictionary, learning cache, candidate rewriter (width/case/symbol variants)
+- **karukan-cli** (`karukan-cli/`): CLI tools and server — dictionary builder, Sudachi converter, dict viewer, AJIMEE-Bench, HTTP API server
+- **karukan-im** (`karukan-im/core/`): Shared IME engine state machine (Empty → Composing → Conversion) and `karukan-imserver` stdio JSON-RPC server (macOS binary bundled in the macOS frontend)
+- **karukan-fcitx5** (`karukan-im/fcitx5/`): fcitx5 Linux frontend — C FFI (`src/ffi/`) and C++ addon (`fcitx5-addon/`) that wrap karukan-im
+- **karukan-macos** (`karukan-im/macos/`): Swift/InputMethodKit frontend that spawns `karukan-imserver` as a bundled child process
 
 ## Repository and Branch Workflow
 
@@ -81,7 +81,7 @@ cargo build -p karukan-fcitx5 --release
 cargo test -p karukan-fcitx5
 
 # Build and install fcitx5 addon
-cd karukan-fcitx5/fcitx5-addon
+cd karukan-im/fcitx5/fcitx5-addon
 
 # Option A: System install (sudo required, no FCITX_ADDON_DIRS needed)
 cmake -B build -DCMAKE_INSTALL_PREFIX=/usr
@@ -97,7 +97,7 @@ cmake --install build
 ### karukan-macos
 
 ```bash
-cd karukan-macos
+cd karukan-im/macos
 
 make test      # Swift tests (incl. integration tests against a real karukan-imserver)
 make install   # Build, assemble Karukan.app, install to ~/Library/Input Methods (auto-downloads dict.bin if missing and prefetches all models.toml models into the HF cache)
@@ -120,7 +120,7 @@ cargo clippy --workspace  # Lint all crates
 - `romaji/` — Romaji-to-hiragana conversion
   - `trie.rs` — Trie data structure
   - `rules.rs` — 200+ conversion rule
-  - `converter.rs` — FSM converter
+  - `converter.rs` — Stateless converter (`convert`/`flush_pending`/`starts_rule`)
 - `kanji/` — Kana-kanji conversion via llama.cpp
   - `backend.rs` — Backend + KanaKanjiConverter
   - `llamacpp.rs` — GGUF inference
@@ -144,15 +144,17 @@ cargo clippy --workspace  # Lint all crates
 - `bin/ajimee_bench.rs` — AJIMEE-Bench evaluation
 - `static/` — Web UI assets for server and dict-viewer
 
-### karukan-im (`karukan-im/src/`)
+### karukan-im (`karukan-im/core/src/`)
 
 - `core/engine/` — IMEEngine state machine (Empty → Composing → Conversion)
   - `mod.rs` — Main InputMethodEngine struct and core processing logic
   - `types.rs` — EngineConfig, EngineResult, EngineAction, Converters, ConversionStrategy
   - `input.rs` — Key input handling for Composing state
-  - `input_buffer.rs` — Input buffer (hiragana text + cursor position)
+  - `input_buffer.rs` — Composition record: per-display-char element array (`Romaji`/`Converted`) + caret index; display/reading/pending are derived views. `Converted` also carries the keystrokes it came from, which `raw_text()`/`raw_prefix()` expose for the F9/F10 alphanumeric keys
+  - `form.rs` — Function-key (F6–F10) character-form conversion (fork-only)
   - `conversion.rs` — Conversion mode handling (candidate building, commit)
-  - `chunk.rs` — Live-conversion chunking: the Japanese/non-Japanese split (`is_japanese`, `group_chunks`), incremental re-chunk diff (`ChunkPlan`), and `chunked_auto_suggest`
+  - `chunk.rs` — Live-conversion chunking: the Japanese/non-Japanese split (`is_japanese`, `group_chunks`) and `chunked_auto_suggest`
+  - `cache.rs` — LRU conversion cache keyed by (katakana reading, lctx, strategy) used by `run_kana_kanji_conversion`
   - `cursor.rs` — Cursor movement
   - `display.rs` — Preedit text display
   - `mode.rs` — Mode switching (katakana, alphabet, live conversion)
@@ -166,7 +168,7 @@ cargo clippy --workspace  # Lint all crates
 - `config/settings.rs` — User settings (`~/.config/karukan-im/config.toml` on Linux, `~/Library/Application Support/com.karukan.karukan-im/` on macOS)
 - `server/` — stdio JSON-RPC 2.0 server for the macOS frontend (`protocol.rs` defines the wire format; `bin/karukan-imserver.rs` is the entry point)
 
-### karukan-fcitx5 (`karukan-fcitx5/`)
+### karukan-fcitx5 (`karukan-im/fcitx5/`)
 
 Linux fcitx5 frontend. Wraps karukan-im via C FFI and exposes the engine to the C++ addon.
 
@@ -177,7 +179,7 @@ Linux fcitx5 frontend. Wraps karukan-im via C FFI and exposes the engine to the 
 - `include/karukan.h` — C header for the fcitx5 C++ addon
 - `fcitx5-addon/src/karukan.cpp` — C++ fcitx5 wrapper
 
-### karukan-macos (`karukan-macos/Sources/KarukanIME/`)
+### karukan-macos (`karukan-im/macos/Sources/KarukanIME/`)
 
 Swift/InputMethodKit frontend. All IME state lives in karukan-imserver (spawned as a bundled child process); Swift only adapts IMK events and renders UI.
 
@@ -187,7 +189,7 @@ Swift/InputMethodKit frontend. All IME state lives in karukan-imserver (spawned 
 - `resources/*.tiff` — template menu icon (か), regenerated via `swift scripts/generate_icons.swift`; `resources/{ja,en}.lproj/InfoPlist.strings` localize the input mode name shown in the input menu
 - `EngineProcess.swift` — child process lifecycle: crash restart with exponential backoff, EOF-based clean shutdown (lets the server save its learning cache)
 - `EngineClient.swift` — JSON-RPC transport (sync for process_key, async for fire-and-forget)
-- `EngineProtocol.swift` — Swift mirror of `karukan-im/src/server/protocol.rs` (keep in sync; protocol_version guards breaking changes)
+- `EngineProtocol.swift` — Swift mirror of `karukan-im/core/src/server/protocol.rs` (keep in sync; protocol_version guards breaking changes)
 - `CandidateWindowController.swift` — custom NSPanel candidate window (engine pre-paginates)
 
 ## macOS Input Mode Design
@@ -199,11 +201,12 @@ The engine-internal `InputMode::Alphabet` (entered via Shift+letter on Linux/fci
 ## Key Design Patterns
 
 - IMEEngine uses a state machine: Empty → Composing → Conversion
-- `input_buf: InputBuffer` in IMEEngine is the source of truth for hiragana text (`.text` field holds the composed hiragana, `.cursor_pos` tracks cursor position)
-- RomajiConverter accumulates output; consumed into input_buf via delta tracking
+- `input_buf: InputBuffer` in IMEEngine is the source of truth: an element array (one element per display character — `Romaji(char)` unfired keystroke / `Converted(char)` settled character: fired output, passthrough, or direct input) plus a caret index. All views (display, conversion reading, aux romaji tail) are derived from it
+- `RomajiConverter` is stateless (pure `convert`/`flush_pending`); after each romaji keystroke the engine re-evaluates only the Romaji run ending at the caret (`evaluate_run`), re-recording fired keystrokes as `Converted`. `Converted` never re-enters evaluation, so settled text never reverts. Backspace/delete remove one element and then evaluate the run the removal joined, so the result always equals typing the remaining keystrokes fresh (`ykt` → BS → `o` → 「yこ」; `yt1t` minus the `1` → 「yっt」). Cursor moves and mode toggles never touch the array
 - Models use jinen format with special Unicode tokens (U+EE00–U+EE02) from the Private Use Area; model input is katakana (hiragana is converted to katakana before inference)
 - Model registry defined in `karukan-engine/models.toml`; default models use Q5_K_M quantization
-- Live conversion (auto-suggest) splits the composing buffer into internal chunks of at most `composing_chunk_len` reading chars (default 40, configurable) so each model call stays bounded for long input. Chunking (`group_chunks`) starts a new chunk whenever the current one is full OR the character group changes between Japanese and non-Japanese (`is_japanese`: hiragana, katakana incl. `ー`, and kanji are Japanese; ASCII/full-width digits, letters, symbols, and all punctuation are non-Japanese). A non-Japanese run (digits/symbols/alphabet) is passed through to the preedit verbatim and never sent to the neural converter (which otherwise tends to drop digits mid-run, e.g. `123456`); a Japanese run is converted by the model. Because punctuation is non-Japanese, it forms its own chunk and naturally separates clauses (`今日は。明日` → `今日は`/`。`/`明日`), so there is no separate punctuation rule. A katakana word like `スーパーマーケット` is entirely Japanese, so it stays one chunk. `chunked_auto_suggest` re-chunks incrementally: it diffs the new buffer against the previous chunking by common character prefix/suffix and reconverts only the changed span (`ChunkPlan` decides which leading/trailing chunks to reuse). Each chunk's left context (lctx) is the editor surrounding text plus the converted text of the preceding chunks, truncated to `max_context_length`. Chunks are internal — the user sees one continuous preedit, and the aux text shows the current chunk's lctx as its single `lctx:`
+- Live conversion (auto-suggest) splits the composing buffer into internal chunks of at most `composing_chunk_len` reading chars (default 40, configurable) so each model call stays bounded for long input. Chunking (`group_chunks`) starts a new chunk whenever the current one is full OR the character group changes between Japanese and non-Japanese (`is_japanese`: hiragana, katakana incl. `ー`, and kanji are Japanese; ASCII/full-width digits, letters, symbols, and all punctuation are non-Japanese). A non-Japanese run (digits/symbols/alphabet) is passed through to the preedit verbatim and never sent to the neural converter (which otherwise tends to drop digits mid-run, e.g. `123456`); a Japanese run is converted by the model. Because punctuation is non-Japanese, it forms its own chunk and naturally separates clauses (`今日は。明日` → `今日は`/`。`/`明日`), so there is no separate punctuation rule. A katakana word like `スーパーマーケット` is entirely Japanese, so it stays one chunk. `chunked_auto_suggest` re-chunks the whole buffer from scratch on every keystroke and re-runs every chunk through `run_kana_kanji_conversion`, which caches results in an LRU keyed by (katakana reading, lctx, conversion strategy incl. beam width) — unchanged chunks are cache hits and only chunks whose reading or left context changed reach the model (a middle edit therefore reconverts the chunks to its right with their updated lctx). Each chunk's left context (lctx) is the editor surrounding text plus the converted text of the preceding chunks, truncated to `max_context_length`. Chunks are internal — the user sees one continuous preedit, and the aux text shows the current chunk's lctx as its single `lctx:`
+- Dictionary lookup during composing/conversion is exact match plus predictive (prefix-extending) matches: readings that start with the typed reading surface as extra candidates (2+ typed chars required; up to 3 in the composing suggestion list, uncapped in the paged conversion list), ranked by `score + 500·ln(50·remaining_chars)` — dictionary scores are -500·log(p) costs, so longer completions are demoted on the same scale. Predictive candidates carry their full reading so committing records under the right key. While a romaji tail is unresolved, prediction is narrowed to the kana that tail can become (わせ + `d` keeps わせだ… and drops わせり…; a tail that cannot become kana suppresses prediction)
 - Learning cache records user-selected conversions and boosts them on subsequent conversions; candidate priority: Learning → User Dictionary → Model → System Dictionary → Fallback → Rewriter. Surfaces longer than `max_surface_chars` (default 50, `[learning]` in config.toml; both learning limits travel as `LearningConfig`) are not recorded. During conversion, Ctrl+Backspace or Ctrl+Delete (the Mac "delete" key is Backspace) removes the selected learning candidate from the history, mozc-style (`DeleteSelectedCandidate`): the removal clears the entry's whole prefix fan-out (`LearningCache::remove_suggestion`) so deduped twins under longer readings can't resurface, and the conversion is then rebuilt in place (mozc's cancel-and-reconvert, minus the window blink) so a surface that the model/dictionary/fallback also produce survives as an ordinary candidate. With a non-learning candidate selected the chord is consumed but does nothing (mozc's `DoNothing`); cancelling stays on plain Backspace/Escape; the chord exists only in the Conversion state (Composing keeps plain char editing). Deletability is derived from `Candidate::source` (`CandidateSource::is_deletable`, mozc's `USER_HISTORY_PREDICTION` analogue), and while a learning candidate is selected the aux text shows the mozc-style footer hint 「Ctrl+Backspaceで履歴から削除」
 - Data files (system dictionary `dict.bin`, user dictionaries `user_dicts/`, learning cache `learning.tsv`) live in the data directory: `~/.local/share/karukan-im/` on Linux, `~/Library/Application Support/com.karukan.karukan-im/` on macOS; a prebuilt `dict.tgz` is published on GitHub releases
 - Learning cache is persisted as TSV (`learning.tsv` in the data directory); saved on deactivate and engine free, not on every commit
@@ -211,4 +214,4 @@ The engine-internal `InputMode::Alphabet` (entered via Shift+letter on Linux/fci
 
 ## Training (karukan-jinen)
 
-Model training is handled by the separate `karukan-jinen` Python project (not in this repository). It trains GPT-2 based models for kana-kanji conversion using the jinen format, and outputs GGUF files for use with karukan-engine.
+Model training is handled by the separate `karukan-jinen` Python project (not in this repository). It trains small language models (GPT-2 and Qwen3 based) for kana-kanji conversion using the jinen format, and outputs GGUF files for use with karukan-engine.
