@@ -8,14 +8,8 @@ use super::*;
 
 #[test]
 fn test_ctrl_k_converts_to_katakana() {
-    let mut engine = InputMethodEngine::new();
-
-    // Type "aiueo" -> "あいうえお"
-    engine.process_key(&press('a'));
-    engine.process_key(&press('i'));
-    engine.process_key(&press('u'));
-    engine.process_key(&press('e'));
-    engine.process_key(&press('o'));
+    // Ctrl+K is the subject; how "あいうえお" got into the buffer is not.
+    let mut engine = composing_with("あいうえお");
     assert_eq!(engine.preedit().unwrap().text(), "あいうえお");
 
     // Press Ctrl+k -> should convert preedit to katakana (preedit shows "アイウエオ")
@@ -86,14 +80,7 @@ fn test_ctrl_k_with_empty_input() {
 
 #[test]
 fn test_ctrl_k_uppercase_converts_to_katakana() {
-    let mut engine = InputMethodEngine::new();
-
-    // Type "aiueo" -> "あいうえお"
-    engine.process_key(&press('a'));
-    engine.process_key(&press('i'));
-    engine.process_key(&press('u'));
-    engine.process_key(&press('e'));
-    engine.process_key(&press('o'));
+    let mut engine = composing_with("あいうえお");
     assert_eq!(engine.preedit().unwrap().text(), "あいうえお");
 
     // Press Ctrl+K (uppercase K) -> should convert preedit to katakana
@@ -136,14 +123,7 @@ fn test_ctrl_k_uppercase_converts_to_katakana() {
 
 #[test]
 fn test_katakana_baked_on_switch_to_alphabet() {
-    let mut engine = InputMethodEngine::new();
-
-    // Type "aiueo" → "あいうえお"
-    engine.process_key(&press('a'));
-    engine.process_key(&press('i'));
-    engine.process_key(&press('u'));
-    engine.process_key(&press('e'));
-    engine.process_key(&press('o'));
+    let mut engine = composing_with("あいうえお");
     assert_eq!(engine.preedit().unwrap().text(), "あいうえお");
 
     // Ctrl+K → katakana mode, displays "アイウエオ"
@@ -176,11 +156,7 @@ fn test_katakana_baked_on_switch_to_alphabet() {
 
 #[test]
 fn test_ctrl_k_is_one_way_to_katakana() {
-    let mut engine = InputMethodEngine::new();
-
-    // Type "ai" → "あい"
-    engine.process_key(&press('a'));
-    engine.process_key(&press('i'));
+    let mut engine = composing_with("あい");
 
     // Ctrl+K → katakana mode
     let ctrl_k = KeyEvent {

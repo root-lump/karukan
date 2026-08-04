@@ -77,6 +77,22 @@ fn last_aux_text(result: &EngineResult) -> Option<String> {
     })
 }
 
+/// Engine in Composing state with `kana` already settled in the input buffer
+/// and the caret at the end.
+///
+/// Seeds the buffer directly instead of replaying romaji keystrokes, so the
+/// setup never enters the conversion path and cannot be influenced by a
+/// loaded model. Use this whenever the keystrokes are only a way to reach a
+/// state; keep real key events where the keystroke path is itself under test
+/// (romaji re-evaluation, pass-through reclaim, cursor editing).
+fn composing_with(kana: &str) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::new();
+    engine.input_buf.insert(kana);
+    let preedit = engine.build_composing_preedit();
+    engine.state = InputState::Composing { preedit };
+    engine
+}
+
 fn make_live_conversion_engine() -> InputMethodEngine {
     let mut engine = InputMethodEngine::new();
     engine.live.enabled = true;
