@@ -96,15 +96,34 @@ jobs:
       - name: Run cargo fmt
         run: cargo fmt -p karukan-engine -- --check
 
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  # Deliberately one job per OS instead of a matrix. A matrix job skipped by
+  # `if:` never expands its matrix, so it reports a single check under the
+  # *unexpanded* name `Test (${{ matrix.os }})`. The required checks
+  # `Test (ubuntu-latest)` / `Test (macos-latest)` would then never be
+  # reported and the PR would block forever. Literal names always report,
+  # whether the job runs or is skipped.
+  #
+  # Separate jobs also preserve the old `fail-fast: false` behaviour: one OS
+  # failing does not cancel the other.
+  test-ubuntu:
+    name: Test (ubuntu-latest)
+    runs-on: ubuntu-latest
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Run unit tests
+        run: cargo test -p karukan-engine --lib --bins
+
+  test-macos:
+    name: Test (macos-latest)
+    runs-on: macos-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -137,15 +156,29 @@ jobs:
         run: cargo test -p karukan-engine --test kanji_conversion_tests -- --ignored
         timeout-minutes: 30
 
-  build:
-    name: Build Release (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  # Same reason as the test jobs above: literal names so a skipped job still
+  # reports under a stable check name. Not required today, but keeping the
+  # shape consistent means adding these to the ruleset later cannot reintroduce
+  # the deadlock.
+  build-ubuntu:
+    name: Build Release (ubuntu-latest)
+    runs-on: ubuntu-latest
     needs: changes
     if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+      - name: Build release
+        run: cargo build -p karukan-engine --release
+
+  build-macos:
+    name: Build Release (macos-latest)
+    runs-on: macos-latest
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.relevant == 'true'
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
