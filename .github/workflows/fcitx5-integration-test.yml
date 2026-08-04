@@ -57,8 +57,24 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - uses: docker/setup-buildx-action@v3
+
+      # Layer caching is what keeps this job short. Without it every run
+      # re-downloads the apt dependencies (once an hour's worth) and rebuilds
+      # every Rust dependency from scratch. `mode=max` is required: the default
+      # `min` only stores the final stage, which would leave the apt layer and
+      # the cargo-chef cook layer -- the two expensive ones -- uncached.
       - name: Build Docker image
-        run: docker build -f tests/integration/Dockerfile.fcitx5 -t karukan-fcitx5-test .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: tests/integration/Dockerfile.fcitx5
+          tags: karukan-fcitx5-test
+          load: true
+          build-args: |
+            APT_MIRROR=http://azure.archive.ubuntu.com/ubuntu
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Run integration tests
         run: docker run --rm karukan-fcitx5-test

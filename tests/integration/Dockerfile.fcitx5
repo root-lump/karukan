@@ -1,9 +1,33 @@
-FROM ubuntu:24.04
+# syntax=docker/dockerfile:1
 
+# Empty by default so local builds keep the image's own mirror. CI passes the
+# Azure mirror, which sits on the same network as the GitHub-hosted runners --
+# archive.ubuntu.com delivers roughly 100 KB/s from there, which alone cost the
+# integration test job an hour per run.
+ARG APT_MIRROR=
+
+# -----------------------------------------------------------------------------
+# base -- system dependencies, Rust toolchain, cargo-chef
+# -----------------------------------------------------------------------------
+FROM ubuntu:24.04 AS base
+
+ARG APT_MIRROR
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
+RUN if [ -n "${APT_MIRROR}" ]; then \
+        sed -i -e "s|http://archive.ubuntu.com/ubuntu|${APT_MIRROR}|g" \
+               -e "s|http://security.ubuntu.com/ubuntu|${APT_MIRROR}|g" \
+               /etc/apt/sources.list.d/ubuntu.sources; \
+    fi
+
+# --no-install-recommends is load-bearing: fcitx5 recommends fcitx5-config-qt
+# and fcitx5-frontend-all, which drag in Qt5, Qt6, GTK3, GTK4, mesa and vulkan
+# (403 packages / 463 MB fetched). The integration test only needs the fcitx5
+# daemon itself plus the addon it loads, so packages that recommends used to
+# supply implicitly (ca-certificates, binutils) are listed explicitly below.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # HTTPS trust store for rustup/cargo
+    ca-certificates \
     # Rust installer
     curl \
     # fcitx5 development dependencies
@@ -19,7 +43,9 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     pkg-config \
-    # bindgen FFI binding generation
+    # readelf, used by the test to check the addon's RPATH
+    binutils \
+    # bindgen FFI binding generation (llama-cpp-sys-2)
     clang \
     libclang-dev \
     # HTTPS (model download etc.)
@@ -35,12 +61,34 @@ RUN apt-get update && apt-get install -y \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Copy source code
+RUN cargo install cargo-chef --locked
+
 WORKDIR /karukan
+
+# -----------------------------------------------------------------------------
+# planner -- distil the workspace into a dependency-only recipe
+# -----------------------------------------------------------------------------
+FROM base AS planner
+
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# -----------------------------------------------------------------------------
+# builder -- build dependencies first (cacheable), then the addon
+# -----------------------------------------------------------------------------
+FROM base AS builder
+
+# Only the recipe crosses over, so this layer's cache key depends on the
+# dependency graph alone: editing karukan source does not invalidate it.
+COPY --from=planner /karukan/recipe.json recipe.json
+RUN cargo chef cook --release -p karukan-fcitx5 --recipe-path recipe.json
+
+# Copy source code
 COPY . .
 
 # Build and install fcitx5 addon (system install)
 # Note: CMake's karukan_rust_lib target runs `cargo build --release -p karukan-fcitx5`
+# from the workspace root, so it reuses the /karukan/target primed by cargo chef.
 WORKDIR /karukan/karukan-im/fcitx5/fcitx5-addon
 RUN cmake -B build -DCMAKE_INSTALL_PREFIX=/usr \
     && cmake --build build -j"$(nproc)" \
