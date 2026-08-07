@@ -47,10 +47,16 @@ jobs:
         run: |
           git fetch origin master main
 
-      - name: Check for diff between master and main
+      - name: Check for commits to sync from master
         id: check_diff
         run: |
-          if git diff --quiet origin/master main; then
+          # fork の main には upstream に無い独自変更が常にあるため、ツリー差分
+          # (git diff master main) は upstream が同期済みでも必ず非空になり、
+          # 「マージしてもコミットが増えない」ケースを検出できない（PR 作成が
+          # No commits between main and upstream-sync で失敗していた）。
+          # 取り込むべきコミットの有無で判定し、基点は Build sync branch が
+          # ブランチを作り直す土台 (origin/main) に合わせる。
+          if [ "$(git rev-list --count origin/main..origin/master)" -eq 0 ]; then
             echo "has_diff=false" >> "$GITHUB_OUTPUT"
           else
             echo "has_diff=true" >> "$GITHUB_OUTPUT"
@@ -60,7 +66,7 @@ jobs:
         if: steps.check_diff.outputs.has_diff == 'true'
         id: collect_prs
         run: |
-          # main..origin/master 間のマージコミットから PR 情報を抽出（API 不要）
+          # origin/main..origin/master 間のマージコミットから PR 情報を抽出（API 不要）
           # fork 元 PR への相互参照（mentioned 通知）を残さないよう、リンクは
           # redirect.github.com 経由にする（バックリンクを生成しない公式の方法:
           # docs.github.com の "Avoiding backlinks to linked references"）
@@ -74,18 +80,18 @@ jobs:
                 PR_LIST="${PR_LIST}- [#${PR_NUM}](https://redirect.github.com/togatoga/karukan/pull/${PR_NUM}) ${PR_TITLE}"$'\n'
               fi
             fi
-          done < <(git log main..origin/master --merges --oneline --grep="Merge pull request")
+          done < <(git log origin/main..origin/master --merges --oneline --grep="Merge pull request")
 
           # マージコミットが見つからない場合（squash merge 等）のフォールバック
           # subject 中の "(#N)" はそのままだと自リポジトリの PR として誤リンク
           # されるため、redirect.github.com 経由の upstream リンクに変換する
           if [ -z "$PR_LIST" ]; then
-            TOTAL=$(git log main..origin/master --oneline --no-merges | wc -l)
+            TOTAL=$(git log origin/main..origin/master --oneline --no-merges | wc -l)
             PR_LIST="(マージコミットなし。コミット一覧:)"$'\n'
             while IFS= read -r line; do
               LINKED=$(echo "$line" | sed -E 's|#([0-9]+)|[#\1](https://redirect.github.com/togatoga/karukan/pull/\1)|g')
               PR_LIST="${PR_LIST}- ${LINKED}"$'\n'
-            done < <(git log main..origin/master --oneline --no-merges | head -20)
+            done < <(git log origin/main..origin/master --oneline --no-merges | head -20)
             # 一覧は 20 件で打ち切るため、隠れた分があることを明示する
             if [ "$TOTAL" -gt 20 ]; then
               PR_LIST="${PR_LIST}- ...他 $((TOTAL - 20)) 件"$'\n'
@@ -162,8 +168,8 @@ jobs:
           "
           fi
 
-          # body は毎回 main..origin/master から作り直す。
-          # 以前は既存 body への追記方式だったが、main..origin/master は
+          # body は毎回 origin/main..origin/master から作り直す。
+          # 以前は既存 body への追記方式だったが、origin/main..origin/master は
           # 「main に未取り込みの upstream コミット全部」を毎回返すため、
           # PR がマージされるまで同じコミットが日付セクションごとに再掲されていた。
           BODY="${NOTICE}## Upstream Changes
