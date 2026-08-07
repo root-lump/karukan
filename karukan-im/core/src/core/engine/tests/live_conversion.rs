@@ -317,15 +317,13 @@ fn test_alphabet_mode_with_kana_keeps_converting() {
     set_live_text(&mut engine, "亜A");
 
     // Typing another latin char re-runs refresh_input_state. Because the buffer
-    // still has kana, the "preserve display" early-return is bypassed and
-    // conversion runs again, so the stale display must not survive.
-    //
-    // What the fresh conversion produces is deliberately not asserted: that
-    // depends on whether a model is loaded and on what it emits.
+    // still has kana, the "preserve display" early-return is bypassed and the
+    // buffer is re-chunked and reconverted (the converted text depends on the
+    // loaded model, so assert on the chunk readings, not the output).
     engine.process_key(&press('b'));
-    assert_ne!(
-        engine.live_text(),
-        "亜A",
+    let rechunked: String = engine.chunks.iter().map(|c| c.reading.as_str()).collect();
+    assert_eq!(
+        rechunked, "あAb",
         "mixed kana buffer must reconvert in alphabet mode, not preserve stale live.text"
     );
 }
