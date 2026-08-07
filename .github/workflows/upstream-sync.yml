@@ -109,6 +109,37 @@ jobs:
         if: steps.check_diff.outputs.has_diff == 'true'
         id: build_branch
         run: |
+          # upstream-sync が既に origin/master を含んでいるなら、コンフリクトは
+          # 手動で解消済み（あるいは前回のマージが生きている）。作り直すとその
+          # 解消結果を捨てて同じ衝突を再現してしまい、main に取り込まれるまで
+          # 毎回「コンフリクトあり」と誤通知し続けるので、origin/main をマージ
+          # して追従させるだけにする。master が更新されればこの条件は偽に戻り、
+          # 下の通常経路で作り直される。
+          if git merge-base --is-ancestor origin/master origin/upstream-sync 2>/dev/null; then
+            git checkout -B upstream-sync origin/upstream-sync
+            if git merge --no-edit origin/main; then
+              # 既に main を含んでいれば "Already up to date" で何も増えない。
+              # そこまで force push すると PR が毎日更新されるので抑制する。
+              if [ "$(git rev-parse HEAD)" != "$(git rev-parse origin/upstream-sync)" ]; then
+                git push -f origin upstream-sync
+              fi
+              echo "conflict=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            # 追従マージが衝突した場合は通知する。解消済みブランチはそのまま
+            # 残す（下の空コミット経路には来ないので踏み潰されない）。
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+            git merge --abort
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "conflict_files<<EOF"
+              cat /tmp/conflicts.txt
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # master はミラーなので PR の head にせず、main から作り直した
           # 専用ブランチに master をマージして常に main に追従させる
           git checkout -B upstream-sync origin/main
