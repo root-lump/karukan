@@ -118,13 +118,23 @@ jobs:
             exit 0
           fi
 
-          # コンフリクト時はブランチを作り直せない。ここで即失敗させると
-          # 「なぜ PR が更新されないのか」が Actions のログを見ないと分からない
-          # ので、衝突したファイルを PR body に載せてから最後のステップで
-          # 失敗させる。既存の upstream-sync はそのまま残す。
+          # コンフリクト時はマージ結果を push できない。PR が無いと Actions の
+          # ログを見ないと気づけないので、衝突したファイルを PR body に載せて
+          # 通知する。
           git diff --name-only --diff-filter=U > /tmp/conflicts.txt
           git merge --abort
           echo "conflict=true" >> "$GITHUB_OUTPUT"
+
+          # GitHub は 0 コミットの PR を作れないため、upstream-sync が main と
+          # 同一だと通知の受け皿が無い。その場合だけ origin/main + 空コミットで
+          # 作り直して PR を作れるようにする。既に実コミットが載っている
+          # upstream-sync（前回同期分や手動解消済みのマージ）は踏み潰さない。
+          # merge --abort 済みなので HEAD は上の checkout -B が置いた origin/main。
+          if [ "$(git rev-list --count origin/main..origin/upstream-sync 2>/dev/null || echo 0)" -eq 0 ]; then
+            git commit --allow-empty -m "chore: upstream-sync コンフリクト通知用の空コミット"
+            git push -f origin upstream-sync
+          fi
+
           {
             echo "conflict_files<<EOF"
             cat /tmp/conflicts.txt
@@ -133,6 +143,7 @@ jobs:
 
       - name: Create or update PR
         if: steps.check_diff.outputs.has_diff == 'true'
+        id: create_pr
         env:
           GH_TOKEN: ${{ secrets.SYNC_PAT }}
           # fork リポジトリでは gh が fork 元 (togatoga/karukan) を PR の対象に
@@ -186,21 +197,22 @@ jobs:
 
           EXISTING_PR=$(gh pr list --base main --head upstream-sync --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
 
+          # 通知できたかを output に出す。コンフリクトはジョブを失敗させないので、
+          # 「通知そのものに失敗した」ケースだけは最後のステップで拾う必要がある。
+          NOTIFIED=true
           if [ -n "$EXISTING_PR" ]; then
-            gh pr edit "$EXISTING_PR" --title "$TITLE" --body "$BODY"
-          elif [ "$CONFLICT" = "true" ]; then
-            # upstream-sync が main と同一なので PR を作れない。次のステップで
-            # ジョブを失敗させるので、ここは通知を諦めて先に進む。
-            echo "コンフリクトのため upstream-sync を更新できず、新規 PR も作成できません。"
+            gh pr edit "$EXISTING_PR" --title "$TITLE" --body "$BODY" || NOTIFIED=false
           else
             gh pr create --base main --head upstream-sync \
-              --title "$TITLE" --body "$BODY"
+              --title "$TITLE" --body "$BODY" || NOTIFIED=false
           fi
+          echo "notified=$NOTIFIED" >> "$GITHUB_OUTPUT"
 
-      - name: Fail on merge conflict
+      - name: Report merge conflict
         if: steps.build_branch.outputs.conflict == 'true'
         env:
           CONFLICT_FILES: ${{ steps.build_branch.outputs.conflict_files }}
+          NOTIFIED: ${{ steps.create_pr.outputs.notified }}
         run: |
           {
             echo "## upstream-sync: コンフリクト"
@@ -210,4 +222,11 @@ jobs:
             echo "$CONFLICT_FILES" | sed '/^$/d' | sed 's|^|- `|; s|$|`|'
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::error::main と master のマージがコンフリクトしました。upstream-sync を手動で解消してください。"
-          exit 1
+
+          # コンフリクト自体ではジョブを失敗させない。警告つきの PR が通知の
+          # 役割を果たすため、毎日の失敗通知でコンフリクトが埋もれるのを避ける。
+          # 通知にも失敗したときは誰も気づけないので、そのときだけ失敗させる。
+          if [ "$NOTIFIED" != "true" ]; then
+            echo "::error::コンフリクトを通知する PR を作成・更新できませんでした。"
+            exit 1
+          fi
