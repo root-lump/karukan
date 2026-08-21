@@ -57,6 +57,20 @@ pub(super) enum LearningLookup {
     Skip,
 }
 
+/// The composition split at the caret for a conversion, as
+/// [`InputMethodEngine::split_composition_at_caret`] resolved it.
+pub(super) struct ConversionRange {
+    /// The reading to convert: up to the caret when the caret splits the
+    /// composition, the whole composition otherwise.
+    pub reading: String,
+    /// Dictionary lookup base and the unresolved romaji tail narrowing it.
+    pub base: String,
+    pub pending: String,
+    /// Whether the caret actually split the composition (the rest is in
+    /// `conversion_tail`).
+    pub split: bool,
+}
+
 /// Helper for building a deduplicated list of conversion candidates.
 ///
 /// Two push paths exist: [`push`] dedups by text (skips duplicates), and
@@ -167,33 +181,22 @@ impl InputMethodEngine {
         self.start_conversion_impl(lookup, false)
     }
 
-    /// Start kanji conversion for the current input buffer.
+    /// Resolve what a conversion starting now covers, and prepare the
+    /// engine for it: record the keystrokes behind the converted range
+    /// (`conversion_raw`), stash everything right of the caret in
+    /// `conversion_tail`, and shrink the composition to the converted
+    /// range.
     ///
-    /// Resolves the reading, runs `build_conversion_candidates`, and
-    /// transitions into the Conversion state. The previous live-conversion
-    /// result is preserved as the first model candidate so the user sees the
-    /// same text they had been looking at during input.
-    fn start_conversion_impl(
-        &mut self,
-        lookup: LearningLookup,
-        keep_display: bool,
-    ) -> EngineResult {
+    /// Every path that enters the Conversion state from a composition goes
+    /// through here, so Space and the source-filter keys (Ctrl+I / Ctrl+T /
+    /// Ctrl+R) cover the same range: what the caret bounds.
+    pub(super) fn split_composition_at_caret(&mut self) -> ConversionRange {
         // Resolve the reading without touching the composition: pending
         // romaji stays live so cancelling the conversion returns to an
         // editable buffer (けいおうd → Tab → Esc → `a` → けいおうだ)
         let full_reading = self.input_buf.settled_reading(&self.converters.romaji);
         let cursor = self.input_buf.settled_cursor(&self.converters.romaji);
         let total_len = full_reading.chars().count();
-
-        // Predictive candidates only make sense at the end of the buffer:
-        // anywhere else the conversion is bounded by the cursor, and a
-        // prefix match's surface would duplicate the tail's characters on
-        // commit (e.g. `あい|さつ` converting to `挨拶` → `挨拶さつ`).
-        let lookup = if lookup == LearningLookup::Predictive && cursor != total_len {
-            LearningLookup::Exact
-        } else {
-            lookup
-        };
 
         // If cursor is in the middle, convert only up to cursor position;
         // the rest becomes the unconverted tail.
@@ -230,7 +233,44 @@ impl InputMethodEngine {
         if tail.is_some() {
             self.input_buf.set_text(&reading);
         }
+        let split = tail.is_some();
         self.conversion_tail = tail;
+
+        ConversionRange {
+            reading,
+            base,
+            pending,
+            split,
+        }
+    }
+
+    /// Start kanji conversion for the current input buffer.
+    ///
+    /// Resolves the reading, runs `build_conversion_candidates`, and
+    /// transitions into the Conversion state. The previous live-conversion
+    /// result is preserved as the first model candidate so the user sees the
+    /// same text they had been looking at during input.
+    fn start_conversion_impl(
+        &mut self,
+        lookup: LearningLookup,
+        keep_display: bool,
+    ) -> EngineResult {
+        let ConversionRange {
+            reading,
+            base,
+            pending,
+            split,
+        } = self.split_composition_at_caret();
+
+        // Predictive candidates only make sense at the end of the buffer:
+        // anywhere else the conversion is bounded by the cursor, and a
+        // prefix match's surface would duplicate the tail's characters on
+        // commit (e.g. `あい|さつ` converting to `挨拶` → `挨拶さつ`).
+        let lookup = if lookup == LearningLookup::Predictive && split {
+            LearningLookup::Exact
+        } else {
+            lookup
+        };
 
         // Snapshot the live-conversion text before clearing it, so the
         // displayed candidate survives even if re-inference diverges.
@@ -304,7 +344,7 @@ impl InputMethodEngine {
     /// the currently selected candidate (highlighted), already-converted
     /// upcoming segments (underlined), then the unconverted tail
     /// (underlined) if any. Caret sits right after the highlighted segment.
-    fn build_conversion_preedit(&self, selected_text: &str) -> Preedit {
+    pub(super) fn build_conversion_preedit(&self, selected_text: &str) -> Preedit {
         let mut segments: Vec<PreeditSegment> = self
             .confirmed_segments
             .iter()
@@ -1139,12 +1179,18 @@ impl InputMethodEngine {
             reading.push_str(&seg.reading);
         }
         self.upcoming_segments.clear();
+        // The caret goes back where the conversion ended, not to the end of
+        // the reassembled reading: the tail was never part of what was
+        // being converted, and typing next must land at the boundary the
+        // user was working at (あ|い stays あ|い, so `k` gives あk|い).
+        let caret = reading.chars().count();
         if let Some(tail) = self.conversion_tail.take() {
             reading.push_str(&tail);
         }
         // The reading is all that survives a conversion, so the raw
         // keystrokes are gone from here on.
         self.input_buf.set_text(&reading);
+        self.input_buf.set_cursor(caret);
     }
 
     pub(super) fn cancel_conversion(&mut self) -> EngineResult {
