@@ -918,3 +918,38 @@ fn test_home_after_confirming_a_segment_keeps_the_confirmed_text() {
     assert_eq!(engine.input_buf.display(), "あいうえお");
     assert_eq!(engine.input_buf.cursor(), 0);
 }
+
+#[test]
+fn test_function_key_during_conversion_keeps_confirmed_segments() {
+    // A function key (F7 here) re-converts the *current* segment only. The
+    // segments already confirmed with → must still ride along in the commit.
+    let mut engine = engine_in_partial_conversion_with_kanji();
+    engine.process_key(&press_key(Keysym::RIGHT));
+    assert_eq!(engine.confirmed_segments.len(), 1);
+
+    engine.process_key(&press_key(Keysym::F7));
+    assert_eq!(
+        engine.candidates().and_then(|c| c.selected_text()),
+        Some("ウエオ")
+    );
+
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert_eq!(commit_text_of(&result).as_deref(), Some("藍ウエオ"));
+}
+
+#[test]
+fn test_segment_advance_from_a_filtered_view_keeps_the_text() {
+    // Segment navigation rebuilds the conversion, which dissolves the source
+    // filter (like the caret keys do). What must not happen is losing the
+    // segment that was on screen.
+    let mut engine = engine_in_partial_conversion_with_kanji();
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    assert_eq!(engine.state().filter(), Some(CandidateSource::Learning));
+
+    let result = engine.process_key(&press_key(Keysym::RIGHT));
+    assert!(result.consumed);
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(engine.state().filter(), None);
+    assert_eq!(engine.confirmed_segments.len(), 1);
+    assert_eq!(engine.preedit().unwrap().text(), "藍ウエオ");
+}
