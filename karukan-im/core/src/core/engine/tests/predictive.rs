@@ -1,16 +1,7 @@
 //! Predictive dictionary lookup: readings extending the typed prefix.
 
-use std::io::Write;
-
 use super::*;
 use crate::core::engine::conversion::LearningLookup;
-
-fn dict_from_json(json: &str) -> Dictionary {
-    let mut tmp = tempfile::NamedTempFile::new().unwrap();
-    tmp.write_all(json.as_bytes()).unwrap();
-    tmp.flush().unwrap();
-    Dictionary::build_from_json(tmp.path()).unwrap()
-}
 
 #[test]
 fn predictive_dict_candidates_carry_full_reading() {

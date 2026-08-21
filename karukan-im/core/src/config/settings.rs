@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use directories::ProjectDirs;
+use karukan_engine::{BracketStyle, PunctuationStyle, SlashStyle, SymbolStyle, WidthRules};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
@@ -21,6 +22,60 @@ pub struct Settings {
     pub conversion: ConversionSettings,
     /// Learning cache settings
     pub learning: LearningSettings,
+    /// What the aux line shows
+    pub display: DisplaySettings,
+    /// Which symbol each configurable key types
+    pub symbol: SymbolSettings,
+    /// The width kana input comes out at, per character group
+    pub width: WidthRules,
+}
+
+/// The space the Space key inputs while typing kana. Alphabet and emoji
+/// input always take the ASCII one, like the width rules leave direct input
+/// alone.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceStyle {
+    /// The ASCII space.
+    #[default]
+    Half,
+    /// The ideographic space `　`.
+    Full,
+}
+
+/// Which symbol the keys with more than one conventional output type. The
+/// width these settle at is `[width]`, not this section.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolSettings {
+    /// What `,` and `.` type: 、。 ，． 、． ，。
+    pub punctuation: PunctuationStyle,
+    /// What `[` and `]` type: 「」 or []
+    pub bracket: BracketStyle,
+    /// What `/` types: ・ or /
+    pub slash: SlashStyle,
+    /// The space Space inputs while typing kana
+    pub space: SpaceStyle,
+}
+
+impl SymbolSettings {
+    /// The key-to-symbol style the romaji converter is built with. Space is
+    /// not part of it: no romaji rule types a space.
+    pub fn style(&self) -> SymbolStyle {
+        SymbolStyle {
+            punctuation: self.punctuation,
+            bracket: self.bracket,
+            slash: self.slash,
+        }
+    }
+}
+
+/// Aux-line settings
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisplaySettings {
+    /// Start with the detailed aux line (Ctrl+Shift+V toggles it live):
+    /// which part the alternatives cover, inference timing, the model that
+    /// ran, and the context handed to it.
+    pub verbose: bool,
 }
 
 /// Conversion strategy mode
@@ -69,22 +124,40 @@ pub struct ConversionSettings {
     /// Use surrounding text (text left of cursor) as context for conversion
     pub use_context: bool,
     /// Maximum number of surrounding text characters passed to the conversion API
-    pub max_context_length: usize,
+    pub context_chars: usize,
     /// Maximum reading length (in characters) converted by the model in a single
     /// call during live conversion. The composing buffer is split into chunks
     /// of at most this many characters so per-keystroke latency stays bounded
     /// for long input; each chunk's left context is the converted text of the
     /// preceding chunks.
-    pub composing_chunk_len: usize,
+    pub chunk_chars: usize,
+    /// Marks (、。！？…) a chunk containing Japanese keeps instead of
+    /// splitting there, so a sentence keeps converting as one unit.
+    pub chunk_symbols: usize,
+    /// Digits a chunk containing Japanese keeps. The default 0 keeps them
+    /// out of the converter entirely, which is what protects them: the
+    /// model hallucinates on digit runs, dropping or duplicating figures.
+    /// Raising it lets short runs (「だい3かい」) convert with the text
+    /// around them; the digits that fit ride along and the rest open the
+    /// next chunk.
+    pub chunk_digits: usize,
+    /// Alphabet chars a chunk containing Japanese keeps. The default 0 keeps
+    /// latin text passthrough, and keeps the in-progress romaji tail out of
+    /// the converter: while 「わせだd」 is being typed, the `d` is an unfired
+    /// keystroke, not text. Raising it lets 「Rustで」 convert as one unit at
+    /// the cost of feeding that tail to the model on every keystroke.
+    pub chunk_alphabets: usize,
     /// Path to dictionary binary file (optional, defaults to data_dir/dict.bin)
     pub dict_path: Option<String>,
     /// Model variant id (optional, defaults to registry default)
     pub model: Option<String>,
     /// Beam search model variant id (used on Space conversion, default model if unset)
     pub light_model: Option<String>,
-    /// Token count threshold for beam search (at or below → beam, above → greedy)
-    pub short_input_threshold: usize,
-    /// Beam width for short input
+    /// Chars the beam covers, snapped to chunk boundaries: the trailing
+    /// Japanese chunks fitting this budget, always at least the last one.
+    /// A digit/symbol chunk and a manual break both stop the span.
+    pub beam_chars: usize,
+    /// Beam width: how many alternatives the beam returns
     pub beam_width: usize,
     /// Maximum acceptable latency in milliseconds for auto-suggest (0 = disabled)
     /// When a main model conversion exceeds this, the engine adaptively switches to light_model
@@ -225,6 +298,7 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use karukan_engine::Width;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -233,10 +307,88 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.conversion.num_candidates, 9);
         assert!(settings.conversion.use_context);
-        assert_eq!(settings.conversion.max_context_length, 10);
+        assert_eq!(settings.conversion.context_chars, 10);
         assert!(settings.learning.enabled);
         assert_eq!(settings.learning.max_entries, 10000);
         assert_eq!(settings.learning.max_surface_chars, 50);
+    }
+
+    #[test]
+    fn test_default_symbol_and_width_settings() {
+        // Shipped defaults: the Japanese symbols, and kana input that comes
+        // out full-width apart from digits.
+        let settings = Settings::default();
+        assert_eq!(settings.symbol.punctuation, PunctuationStyle::KutenTouten);
+        assert_eq!(settings.symbol.bracket, BracketStyle::Corner);
+        assert_eq!(settings.symbol.slash, SlashStyle::MiddleDot);
+        assert_eq!(settings.symbol.space, SpaceStyle::Half);
+        assert_eq!(settings.width.kana_symbol, Width::Full);
+        assert_eq!(settings.width.ascii_symbol, Width::Full);
+        assert_eq!(settings.width.digit, Width::Half);
+    }
+
+    #[test]
+    fn test_symbol_style_is_written_as_the_symbols() {
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[symbol]
+punctuation = "，．"
+bracket = "[]"
+slash = "/"
+space = "half"
+"#
+        )
+        .unwrap();
+
+        let settings = Settings::load_from(file.path()).unwrap();
+        assert_eq!(settings.symbol.punctuation, PunctuationStyle::CommaPeriod);
+        assert_eq!(settings.symbol.bracket, BracketStyle::Square);
+        assert_eq!(settings.symbol.slash, SlashStyle::Slash);
+        assert_eq!(settings.symbol.space, SpaceStyle::Half);
+    }
+
+    #[test]
+    fn test_width_partial_config() {
+        // Setting one group leaves the others at their default.
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[width]
+ascii_symbol = "half"
+digit = "full"
+"#
+        )
+        .unwrap();
+
+        let settings = Settings::load_from(file.path()).unwrap();
+        assert_eq!(settings.width.ascii_symbol, Width::Half);
+        assert_eq!(settings.width.digit, Width::Full);
+        assert_eq!(settings.width.kana_symbol, Width::Full);
+    }
+
+    #[test]
+    fn test_unknown_keys_are_ignored() {
+        // A config written for an older version (e.g. the removed
+        // short_input_threshold key) must still load: unknown keys are
+        // ignored, the renamed setting falls back to its default, and
+        // the other overrides keep applying.
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"
+[conversion]
+short_input_threshold = 10
+beam_width = 5
+"#
+        )
+        .unwrap();
+
+        let settings = Settings::load_from(file.path()).unwrap();
+        assert_eq!(settings.conversion.chunk_chars, 30);
+        assert_eq!(settings.conversion.beam_width, 5);
     }
 
     #[test]
@@ -314,7 +466,7 @@ num_candidates = 3
         assert_eq!(settings.conversion.num_candidates, 3);
         // Should use default for unspecified values
         assert!(settings.conversion.use_context);
-        assert_eq!(settings.conversion.max_context_length, 10);
+        assert_eq!(settings.conversion.context_chars, 10);
     }
 
     #[test]

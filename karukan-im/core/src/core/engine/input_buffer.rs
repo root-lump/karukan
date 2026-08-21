@@ -451,9 +451,24 @@ fn attribute_raw(text: &str, raw: &str) -> Vec<Element> {
 /// → 「yこ」) and settles otherwise (`1`). Everything else is a fired
 /// rule's output, settled for good. The trailing pending stays `Romaji`
 /// per keystroke.
+///
+/// Settling is where the configured width applies, after the classification
+/// above: a character settles at the width in force when it was typed, so
+/// switching to alphabet input mid-word (`（` then Shift+A) leaves what is
+/// already settled alone.
 fn evaluate_run(run: &str, romaji: &RomajiConverter) -> Vec<Element> {
     let converted = romaji.convert(run);
-    let settled: Vec<char> = converted.text.chars().collect();
+    let settled: Vec<char> = converted
+        .text
+        .chars()
+        .map(|c| {
+            if romaji.starts_rule(c) {
+                c
+            } else {
+                romaji.width().apply(c)
+            }
+        })
+        .collect();
 
     // Walk the run one keystroke at a time so each output character can be
     // credited to the keystrokes that produced it (`kya` → きゃ). Converting
@@ -512,7 +527,7 @@ fn settle_chars(chars: &[char], raw: &str, romaji: &RomajiConverter) -> Vec<Elem
             out.push(Element::Romaji(c));
         } else {
             out.push(Element::Converted {
-                ch: c,
+                ch: romaji.width().apply(c),
                 raw: Some(raw_pending.take().unwrap_or_default().to_string()),
             });
         }

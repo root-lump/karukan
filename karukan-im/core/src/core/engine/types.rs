@@ -1,8 +1,10 @@
 //! Type definitions for the IME engine
 
-use karukan_engine::{Dictionary, KanaKanjiConverter, RewriterChain, RomajiConverter};
+use karukan_engine::{
+    Dictionary, KanaKanjiConverter, RewriterChain, RomajiConverter, SymbolStyle, WidthRules,
+};
 
-use crate::config::settings::{PredictionMode, StrategyMode};
+use crate::config::settings::{PredictionMode, SpaceStyle, StrategyMode};
 
 use super::super::candidate::CandidateList;
 use super::super::preedit::Preedit;
@@ -69,41 +71,56 @@ pub struct EngineConfig {
     /// Number of conversion candidates for explicit conversion (Space key)
     pub num_candidates: usize,
     /// Maximum context length to display
-    pub display_context_len: usize,
+    pub display_context_chars: usize,
     /// Maximum context length for API calls (to avoid overflow)
-    pub max_api_context_len: usize,
+    pub context_chars: usize,
     /// Maximum reading length (chars) converted by the model in a single call.
     /// The composing buffer is split into chunks of at most this many chars so
     /// live-conversion latency stays bounded for long input. See
     /// [`ComposingChunk`] and `chunked_auto_suggest`.
-    pub composing_chunk_len: usize,
-    /// Token count threshold for beam search (at or below → beam, above → greedy)
-    pub short_input_threshold: usize,
-    /// Beam width for short input
+    pub chunk_chars: usize,
+    /// Maximum non-Japanese chars (symbols/digits) a Japanese chunk absorbs
+    /// in total during live conversion; the absorption rules live in
+    /// `group_chunks`.
+    pub chunk_symbols: usize,
+    /// Digits a chunk containing Japanese keeps (0 = split at every run).
+    pub chunk_digits: usize,
+    /// Alphabet chars a chunk containing Japanese keeps (0 = split at every
+    /// run, which also keeps the romaji tail out of the model).
+    pub chunk_alphabets: usize,
+    /// Chars the beam covers, snapped to chunk boundaries.
+    pub beam_chars: usize,
+    /// Beam width: how many alternatives the beam returns
     pub beam_width: usize,
     /// Maximum acceptable latency in milliseconds for auto-suggest (0 = disabled)
     /// When a main model conversion exceeds this, the engine adaptively switches to light_model
     pub max_latency_ms: u64,
     /// Conversion strategy mode (adaptive, light, main)
     pub strategy: StrategyMode,
+    /// Show the detailed aux line (Ctrl+Shift+V toggles it).
+    pub verbose: bool,
     /// Whether live conversion is enabled at engine startup
     pub live_conversion: bool,
     /// How predictive (prefix-match learning) candidates are surfaced
     pub prediction: PredictionMode,
     /// Swap the conversion roles of Space and Tab
     pub swap_space_tab: bool,
-    /// Whether the kana-kanji model may be lazily initialized from the input
-    /// path (`ensure_kanji_converter` during live conversion,
-    /// `build_conversion_candidates` on explicit conversion).
+    /// Whether the engine may load the kana-kanji model on its own
+    /// (`spawn_model_loading`, from `init_from_settings`).
     ///
     /// Always true in production; defaults to false in `cfg(test)` builds.
-    /// Both call sites re-attempt initialization on *every* keystroke while
-    /// the converter is missing, so leaving them enabled in unit tests makes
-    /// each test download and load a real GGUF model — the single largest
+    /// Leaving it enabled in a test suite makes every harness built from
+    /// `Settings` download and load a real GGUF model — the single largest
     /// cost in `cargo test -p karukan-im`, and a source of non-determinism
     /// (behavior depends on whether the machine happens to have a cached
-    /// model). An explicit `init_kanji_converter*` call is unaffected.
+    /// model). An explicit `load_converters` call is unaffected.
     pub lazy_model_init: bool,
+    /// Which symbol the `,` `.` `/` `[` `]` keys type
+    pub symbol: SymbolStyle,
+    /// The width kana input comes out at, per character group
+    pub width: WidthRules,
+    /// The space the Space key inputs
+    pub space: SpaceStyle,
 }
 
 impl EngineConfig {
@@ -112,23 +129,30 @@ impl EngineConfig {
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
         Self {
             num_candidates: settings.conversion.num_candidates,
-            display_context_len: 10,
-            max_api_context_len: if settings.conversion.use_context {
-                settings.conversion.max_context_length
+            display_context_chars: 10,
+            context_chars: if settings.conversion.use_context {
+                settings.conversion.context_chars
             } else {
                 0
             },
-            composing_chunk_len: settings.conversion.composing_chunk_len,
-            short_input_threshold: settings.conversion.short_input_threshold,
+            chunk_chars: settings.conversion.chunk_chars,
+            chunk_symbols: settings.conversion.chunk_symbols,
+            chunk_digits: settings.conversion.chunk_digits,
+            chunk_alphabets: settings.conversion.chunk_alphabets,
+            beam_chars: settings.conversion.beam_chars,
             beam_width: settings.conversion.beam_width,
             max_latency_ms: settings.conversion.max_latency_ms,
             strategy: settings.conversion.strategy,
+            verbose: settings.display.verbose,
             live_conversion: settings.conversion.live_conversion,
             prediction: settings.conversion.prediction,
             swap_space_tab: settings.conversion.swap_space_tab,
             // Built from real user settings — always allow lazy model init,
             // even when karukan-im itself is compiled in test configuration.
             lazy_model_init: true,
+            symbol: settings.symbol.style(),
+            width: settings.width,
+            space: settings.symbol.space,
         }
     }
 }
@@ -137,17 +161,24 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             num_candidates: 3, // Space conversion: beam search with 3 candidates
-            display_context_len: 10,
-            max_api_context_len: 10,
-            composing_chunk_len: 30,
-            short_input_threshold: 10,
+            display_context_chars: 10,
+            context_chars: 10,
+            chunk_chars: 30,
+            chunk_symbols: 1,
+            chunk_digits: 0,
+            chunk_alphabets: 0,
+            beam_chars: 30,
             beam_width: 3,
             max_latency_ms: 100,
             strategy: StrategyMode::default(),
+            verbose: false,
             live_conversion: false,
             prediction: PredictionMode::default(),
             swap_space_tab: false,
             lazy_model_init: !cfg!(test),
+            symbol: SymbolStyle::default(),
+            width: WidthRules::default(),
+            space: SpaceStyle::default(),
         }
     }
 }
@@ -174,43 +205,24 @@ pub(crate) enum InputMode {
     Katakana,
     /// Alphabet (direct input) mode — characters bypass romaji conversion
     Alphabet,
-    /// Emoji shortcode mode — entered by typing `:` from Empty state.
-    /// Behaves like [`InputMode::Alphabet`] (ASCII inserted directly,
-    /// no romaji conversion) but auto-exits back to the prior mode on
-    /// commit/cancel (see [`ModeState`]) so the next word lands in kana
-    /// mode without the user having to toggle anything. The `EmojiRewriter`
-    /// picks up the `:`-prefixed input from the candidate-build pipeline
-    /// and surfaces emoji candidates as the user types.
+    /// Emoji shortcode mode — entered by typing `:` from Empty. Behaves
+    /// like [`InputMode::Alphabet`] but auto-exits to the prior mode on
+    /// commit/cancel; `EmojiRewriter` surfaces candidates for the query.
     Emoji,
 }
 
-/// Input-mode state: the current [`InputMode`] plus the mode to come back
-/// to when a *temporary* mode ends.
-///
-/// [`InputMode::Emoji`] (entered by typing `:`) and [`InputMode::Alphabet`]
-/// (entered via Shift+letter) are temporary, per-composition modes: commit,
-/// cancel, and backspace-to-empty exit them and put the user back in the
-/// kana mode they came from (e.g. a Katakana-mode user lands back in
-/// Katakana) instead of dropping them in Hiragana every time.
-///
-/// Modeled after mozc's `Composer` (`src/composer/composer.cc`), which
-/// pairs `input_mode_` with a non-optional `comeback_input_mode_`.
-/// `comeback` always holds the last *non-temporary* mode and equals
-/// `current` whenever the current mode itself is not temporary, so exiting
-/// is an unconditional `current = comeback` with no fallback case. Because
-/// `comeback` can never be a temporary mode, even the degenerate hop from
-/// one temporary mode into another (Shift+letter while composing an emoji
-/// query moves Emoji → Alphabet) still exits to the user's real kana mode.
-///
-/// The fields are private so every transition goes through the methods
-/// below, which maintain that invariant by construction.
+/// Current [`InputMode`] plus the mode to come back to when a *temporary*
+/// mode (Emoji, Alphabet) ends. `comeback` always holds the last
+/// non-temporary mode and equals `current` while none is active, so
+/// exiting is an unconditional `current = comeback` — even a hop between
+/// two temporary modes exits to the user's real kana mode. Fields are
+/// private so every transition maintains the invariant.
 #[derive(Debug, Default)]
 pub(crate) struct ModeState {
     /// Current input mode.
     current: InputMode,
     /// The last non-temporary mode; what [`ModeState::exit_temporary`]
-    /// restores. Equal to `current` whenever `current` is not temporary
-    /// (mozc's `comeback_input_mode_` invariant).
+    /// restores. Equal to `current` whenever `current` is not temporary.
     comeback: InputMode,
 }
 
@@ -225,9 +237,8 @@ impl ModeState {
         self.current
     }
 
-    /// Switch directly to `mode` (the mode-toggle key → Hiragana, Ctrl+K →
-    /// Katakana). The user explicitly picked a mode, so it also becomes the
-    /// comeback target (mozc's `SetInputMode`).
+    /// Switch directly to `mode`. The user explicitly picked it, so it
+    /// also becomes the comeback target.
     pub(crate) fn set(&mut self, mode: InputMode) {
         debug_assert!(
             !Self::is_temporary(mode),
@@ -237,11 +248,9 @@ impl ModeState {
         self.comeback = mode;
     }
 
-    /// Enter a *temporary* mode (Emoji or Alphabet), remembering the
-    /// current mode for [`ModeState::exit_temporary`] (mozc's
-    /// `SetTemporaryInputMode`). Hopping from one temporary mode into
-    /// another keeps the original comeback target, so re-entry can't
-    /// clobber the saved mode.
+    /// Enter a *temporary* mode, remembering the current one for
+    /// [`ModeState::exit_temporary`]. A hop between two temporary modes
+    /// keeps the original comeback target.
     pub(crate) fn enter_temporary(&mut self, mode: InputMode) {
         debug_assert!(
             Self::is_temporary(mode),
@@ -254,34 +263,19 @@ impl ModeState {
     }
 
     /// End any temporary mode: come back to the last non-temporary mode.
-    /// No-op when the current mode is not temporary (`comeback` equals
-    /// `current` then), so it's safe to call unconditionally from the
-    /// commit/cancel/erase-to-empty exit sites.
-    ///
-    /// This is what makes Shift-triggered alphabet input *temporary*: once
-    /// the word is committed (or abandoned), the next word returns to kana
-    /// without an explicit toggle key — the behavior US-layout users expect,
-    /// since they have no JIS かな key to switch back with (issue #37).
-    /// Likewise an emoji session is bound to the typed `:` and is over once
-    /// the query is committed, cancelled, or erased.
+    /// No-op when none is active, so the commit/cancel/erase exit sites
+    /// call it unconditionally. This is what returns the next word to kana
+    /// without an explicit toggle key (issue #37).
     pub(crate) fn exit_temporary(&mut self) {
         self.current = self.comeback;
     }
 }
 
-/// One internal chunk of the composing buffer (at most
-/// `EngineConfig::composing_chunk_len` reading chars) together with its cached
-/// model conversion.
-///
-/// Chunks are an internal optimization only — the user always sees the
-/// concatenation of every chunk's `converted` text as one continuous preedit;
-/// there are no visible bunsetsu boundaries. Splitting the reading bounds each
-/// model call to N chars so live-conversion latency stays flat for long input.
-///
-/// The left context (lctx) a chunk was converted with is *not* stored: it is
-/// just the editor surrounding text plus the `converted` text of the preceding
-/// chunks, so it is derived on demand via `chunk_lctx` instead of duplicated
-/// here.
+/// One internal chunk of the composing buffer with its cached model
+/// conversion. Chunks are invisible — the user sees the concatenation of
+/// every `converted` as one continuous preedit; splitting only bounds each
+/// model call for long input. The lctx a chunk was converted with is
+/// derived on demand (`chunk_lctx`), never stored.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::core) struct ComposingChunk {
     /// Hiragana reading for this chunk (≤ N chars).
@@ -341,10 +335,21 @@ pub(in crate::core) enum ConversionStrategy {
     ParallelBeam { beam_width: usize },
     /// Long input: light model greedy only (skip slow main model)
     LightModelOnly,
+    /// Latency-downgraded beam: the light half of [`Self::ParallelBeam`]
+    /// alone, so a slow main model costs the beam its quality but not its
+    /// candidate count
+    LightModelBeam { beam_width: usize },
     /// No light model: main model greedy only
     MainModelOnly,
     /// Main model beam search (used in Light strategy mode where light model occupies main slot)
     MainModelBeam { beam_width: usize },
+}
+
+/// Which way Ctrl+R / Ctrl+T rotates the source-filter cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::core) enum FilterDirection {
+    Forward,
+    Backward,
 }
 
 /// Timing and adaptive model selection metrics for conversion
