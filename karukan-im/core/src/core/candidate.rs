@@ -36,6 +36,20 @@ impl CandidateSource {
         }
     }
 
+    /// Short glyph for tight spots like the Ctrl+R filter header in the
+    /// conversion aux text. Empty for Fallback, which has no view of its
+    /// own — its kana ride at the tail of the rewriter view.
+    pub fn emoji(&self) -> &'static str {
+        match self {
+            CandidateSource::UserDictionary => "\u{1F464}", // 👤
+            CandidateSource::Learning => "\u{1F4DD}",       // 📝
+            CandidateSource::Model => "\u{1F916}",          // 🤖
+            CandidateSource::Dictionary => "\u{1F4DA}",     // 📚
+            CandidateSource::Rewriter => "\u{1F504}",       // 🔄
+            CandidateSource::Fallback => "",
+        }
+    }
+
     /// Whether candidates from this source can be removed from the learning
     /// history with Ctrl+Backspace / Ctrl+Delete.
     pub fn is_deletable(&self) -> bool {
@@ -90,18 +104,6 @@ impl Candidate {
     }
 }
 
-impl From<String> for Candidate {
-    fn from(text: String) -> Self {
-        Self::new(text)
-    }
-}
-
-impl From<&str> for Candidate {
-    fn from(text: &str) -> Self {
-        Self::new(text)
-    }
-}
-
 /// A list of candidates with pagination and selection support
 #[derive(Debug, Clone)]
 pub struct CandidateList {
@@ -126,7 +128,8 @@ impl CandidateList {
         }
     }
 
-    /// Create a candidate list from strings
+    /// Create a candidate list from strings (test fixture).
+    #[cfg(test)]
     pub fn from_strings(strings: impl IntoIterator<Item = impl Into<String>>) -> Self {
         Self::new(strings.into_iter().map(Candidate::new).collect())
     }
@@ -286,15 +289,9 @@ impl CandidateList {
         }
     }
 
-    /// Reset cursor to beginning
-    pub fn reset(&mut self) {
-        self.cursor = 0;
-    }
-
-    /// Update the candidate list with new candidates
-    pub fn update(&mut self, candidates: Vec<Candidate>) {
-        self.candidates = candidates;
-        self.cursor = 0;
+    /// Move the cursor to `cursor`, clamped into the list (0 when empty).
+    pub fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = cursor.min(self.candidates.len().saturating_sub(1));
     }
 }
 
