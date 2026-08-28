@@ -16,6 +16,15 @@ fn engine_in_conversion() -> InputMethodEngine {
     engine
 }
 
+/// Typing during a conversion refines the reading only while live
+/// conversion is on (fork-only, see `typing_refines`); with it off the
+/// keystroke commits the selection instead. The tests below are about the
+/// refining behavior, so they turn live conversion on. Nothing else moves:
+/// with no converter and no seeded cache the live display never comes up.
+fn enable_refine_on_typing(engine: &mut InputMethodEngine) {
+    engine.live.enabled = true;
+}
+
 /// Sources of the currently shown candidates.
 fn shown_sources(engine: &InputMethodEngine) -> Vec<Option<CandidateSource>> {
     engine
@@ -309,6 +318,7 @@ fn test_typing_narrows_within_the_filtered_view() {
     // fzf-style: typing while a source view is active keeps the view and
     // narrows it with the grown reading.
     let mut engine = InputMethodEngine::new();
+    enable_refine_on_typing(&mut engine);
     engine.dicts.user = Some(dict_from_json(
         r#"[
         {"reading":"あ","candidates":[{"surface":"亜","score":1.0}]},
@@ -446,6 +456,7 @@ fn test_typing_on_empty_view_keeps_view_and_refines() {
     // A printable key on the empty view extends the reading and stays in
     // the narrowed view — nothing is committed or lost.
     let mut engine = engine_with_learned("あい", "愛");
+    enable_refine_on_typing(&mut engine);
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::SPACE));
@@ -523,6 +534,7 @@ fn test_pending_tail_narrows_the_learning_view() {
     // about to grow), so it drops while a prediction the tail can still
     // reach stays.
     let mut engine = engine_with_learned("あい", "愛");
+    enable_refine_on_typing(&mut engine);
     engine.learning.as_mut().unwrap().record("あいか", "愛香");
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
@@ -552,6 +564,7 @@ fn test_stale_learning_candidate_cannot_swallow_the_tail() {
     // keeping the stale exact match; Enter then commits the settled
     // reading including the tail — the keystroke is never lost.
     let mut engine = engine_with_learned("あい", "愛");
+    enable_refine_on_typing(&mut engine);
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::SPACE));
@@ -780,6 +793,7 @@ fn test_mid_caret_typing_does_not_tail_predict() {
     // conversion, the same as Space): what is right of it stays composing
     // and is committed by a second Enter.
     let mut engine = engine_with_learned("あいか", "愛香");
+    enable_refine_on_typing(&mut engine);
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::LEFT));
@@ -1112,6 +1126,7 @@ fn test_filtered_view_aux_shows_what_is_being_typed() {
     // selected candidate's own reading, which for a predictive entry runs
     // past what was typed and left no sign of the actual input.
     let mut engine = InputMethodEngine::new();
+    enable_refine_on_typing(&mut engine);
     engine.dicts.user = Some(dict_from_json(
         r#"[
         {"reading":"わせだ","candidates":[{"surface":"早稲田","score":1.0}]},
@@ -1226,6 +1241,7 @@ fn returning_to_editing_puts_the_caret_at_the_conversion_boundary() {
     // The caret belongs at the boundary that was being converted, not at
     // the end of the reassembled reading — the tail was never part of it.
     let mut engine = engine_with_caret_after_ai();
+    enable_refine_on_typing(&mut engine);
     engine.process_key(&press_ctrl(Keysym::KEY_T));
     assert_eq!(engine.conversion_tail.as_deref(), Some("うえお"));
 
@@ -1245,6 +1261,7 @@ fn returning_to_editing_from_a_plain_partial_conversion_keeps_the_caret() {
     // in the composition, where the whole reading is visible again with
     // the caret still at the boundary.
     let mut engine = engine_with_caret_after_ai();
+    enable_refine_on_typing(&mut engine);
     engine.process_key(&press_key(Keysym::SPACE));
     assert_eq!(engine.conversion_tail.as_deref(), Some("うえお"));
 

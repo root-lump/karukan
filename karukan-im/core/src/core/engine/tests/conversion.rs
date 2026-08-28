@@ -266,7 +266,8 @@ fn test_partial_conversion_preedit_segments_and_caret() {
 
 #[test]
 fn test_ctrl_digit_selection_commits_and_learns_confirmed_segments() {
-    // Bare digits refine the reading, so candidate selection is Ctrl+digit.
+    // Ctrl+digit selects a candidate in both typing modes, so it is the
+    // selection this test drives regardless of `typing_refines`.
     // Uses its own fresh (unlearned) cache instead of engine_in_partial_conversion()'s
     // pre-seeded one, so it can assert that record_learning actually ran for the
     // confirmed segment — a pre-seeded cache would make that assertion vacuous.
@@ -530,8 +531,11 @@ fn test_shrink_expand_multi_char_romaji_does_not_duplicate_chars() {
 }
 
 #[test]
-fn test_conversion_char_refines_reading() {
-    let mut engine = InputMethodEngine::new();
+fn test_conversion_char_refines_reading_when_live_conversion_is_on() {
+    // Refining is the live-conversion half of the fork-only split (see
+    // `typing_refines`): the preedit already shows converted text, so the
+    // keystroke grows the reading instead of committing.
+    let mut engine = make_live_conversion_engine();
 
     // Type "あい" and enter conversion
     engine.process_key(&press('a'));
@@ -658,10 +662,13 @@ fn committed(result: &EngineResult) -> Option<String> {
 }
 
 #[test]
-fn test_bare_digit_during_conversion_refines_instead_of_selecting() {
-    // Digits are plain text input everywhere: during conversion they extend
-    // the reading like any printable char, never select a candidate.
-    let mut engine = InputMethodEngine::new();
+fn test_bare_digit_refines_when_live_conversion_is_on() {
+    // With live conversion, digits are plain text input like any other
+    // printable char: during conversion they extend the reading and never
+    // select a candidate (selection is Ctrl+digit). Manual conversion puts
+    // the bare digits back on selection — see
+    // `test_manual_conversion_bare_digit_selects_candidate`.
+    let mut engine = make_live_conversion_engine();
     engine.dicts.user = Some(dict_from_json(
         r#"[{"reading":"あい","candidates":[{"surface":"藍","score":1.0}]}]"#,
     ));
@@ -886,10 +893,12 @@ fn test_ctrl_b_in_conversion_moves_caret_like_left() {
 #[test]
 fn test_refining_after_confirming_a_segment_keeps_the_confirmed_text() {
     // Typing during conversion refines the reading (upstream's incremental
-    // conversion) by dropping back to the composition. A segment already
-    // confirmed with → must come back with it — otherwise the confirmed text
-    // survives only in a field nothing displays and is lost on commit.
+    // conversion, kept on the live-conversion side of `typing_refines`) by
+    // dropping back to the composition. A segment already confirmed with →
+    // must come back with it — otherwise the confirmed text survives only in
+    // a field nothing displays and is lost on commit.
     let mut engine = engine_in_partial_conversion_with_kanji();
+    engine.live.enabled = true;
     engine.process_key(&press_key(Keysym::RIGHT));
     assert_eq!(engine.confirmed_segments.len(), 1);
 
@@ -952,4 +961,123 @@ fn test_segment_advance_from_a_filtered_view_keeps_the_text() {
     assert_eq!(engine.state().filter(), None);
     assert_eq!(engine.confirmed_segments.len(), 1);
     assert_eq!(engine.preedit().unwrap().text(), "藍ウエオ");
+}
+
+// === Fork-only: typing during a manual conversion commits and continues ===
+//
+// `typing_refines()` splits the behavior by live conversion: OFF (manual
+// conversion, the mozc-compatible half restored here) commits the selection
+// and starts the next input, ON keeps upstream's incremental refine. The
+// refining half is covered by
+// `test_conversion_char_refines_reading_when_live_conversion_is_on` and
+// `test_bare_digit_refines_when_live_conversion_is_on`.
+
+#[test]
+fn test_manual_conversion_typing_commits_and_continues() {
+    let mut engine = InputMethodEngine::new();
+    assert!(!engine.live.enabled, "test setup: manual conversion");
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    let selected = engine
+        .candidates()
+        .and_then(|c| c.selected_text())
+        .expect("a selected candidate")
+        .to_string();
+
+    // The keystroke commits what was on screen and opens a fresh
+    // composition holding just that key.
+    let result = engine.process_key(&press('k'));
+    assert!(result.consumed);
+    assert_eq!(committed(&result).as_deref(), Some(selected.as_str()));
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.preedit().unwrap().text(), "k");
+
+    // The new composition is an ordinary one: romaji keeps combining.
+    engine.process_key(&press('a'));
+    assert_eq!(engine.preedit().unwrap().text(), "か");
+}
+
+#[test]
+fn test_live_conversion_typing_refines_instead_of_committing() {
+    let mut engine = make_live_conversion_engine();
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let result = engine.process_key(&press('k'));
+    assert!(
+        committed(&result).is_none(),
+        "live conversion must not commit"
+    );
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+
+    engine.process_key(&press('a'));
+    assert_eq!(engine.input_buf.reading(), "あいか");
+}
+
+#[test]
+fn test_manual_conversion_bare_digit_selects_candidate() {
+    // Bare 1..9 go back to mozc's numbered selection when typing commits,
+    // the mirror of `test_ctrl_digit_selects_candidate_during_conversion`.
+    let mut engine = InputMethodEngine::new();
+    engine.dicts.user = Some(dict_from_json(
+        r#"[{"reading":"あい","candidates":[
+            {"surface":"藍","score":2.0},
+            {"surface":"愛","score":1.0}
+        ]}]"#,
+    ));
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    let shown: Vec<String> = engine
+        .candidates()
+        .unwrap()
+        .candidates()
+        .iter()
+        .map(|c| c.text.clone())
+        .collect();
+
+    let result = engine.process_key(&press('2'));
+    assert_eq!(committed(&result).as_deref(), Some(shown[1].as_str()));
+    assert!(matches!(engine.state(), InputState::Empty));
+    assert!(engine.input_buf.is_empty(), "buffer must be cleared");
+}
+
+#[test]
+fn test_manual_conversion_typing_keeps_the_unconverted_tail() {
+    // A partial conversion commits like Enter does: the converted range
+    // goes out, the tail resumes composing, and the keystroke lands after
+    // it. Committing the range and dropping the tail would silently eat
+    // characters the user already typed.
+    let mut engine = engine_in_partial_conversion_with_kanji();
+    assert_eq!(engine.conversion_tail.as_deref(), Some("うえお"));
+
+    let result = engine.process_key(&press('k'));
+    assert_eq!(committed(&result).as_deref(), Some("藍"));
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.input_buf.display(), "うえおk");
+    assert!(engine.conversion_tail.is_none());
+}
+
+#[test]
+fn test_manual_conversion_typing_commits_from_a_filtered_view() {
+    // The source-filter views (Ctrl+Y/U/I/O, Ctrl+R/T) are no exception:
+    // with manual conversion the keystroke commits there too, rather than
+    // narrowing the view.
+    let mut engine = engine_with_learned("あい", "愛");
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let result = engine.process_key(&press('k'));
+    assert_eq!(committed(&result).as_deref(), Some("愛"));
+    assert!(matches!(engine.state(), InputState::Composing { .. }));
+    assert_eq!(engine.preedit().unwrap().text(), "k");
 }

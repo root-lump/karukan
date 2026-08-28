@@ -761,6 +761,18 @@ impl InputMethodEngine {
             .collect()
     }
 
+    /// Fork-only: what a printable keystroke does while a conversion is open.
+    ///
+    /// With live conversion the preedit already shows converted text as the
+    /// user types, so upstream's incremental refine (togatoga/karukan#95) is
+    /// the natural continuation of that feel. With manual conversion the
+    /// candidate on screen is a deliberate choice made with Space, so a
+    /// keystroke commits it and starts the next word — mozc's behavior, and
+    /// what this fork had before the upstream change.
+    fn typing_refines(&self) -> bool {
+        self.live.enabled
+    }
+
     pub(super) fn process_key_conversion(
         &mut self,
         key: &KeyEvent,
@@ -864,11 +876,26 @@ impl InputMethodEngine {
                     }
                 }
 
-                // A printable character refines instead of committing:
-                // the reading grows and the suggestion rewrites in place,
-                // keeping any active source filter.
+                // Bare 1..9 select a candidate when typing commits (mozc),
+                // and are ordinary text when typing refines (upstream).
+                // Ctrl+1..9 selects in both modes, so the numbered selection
+                // is never unreachable.
+                if !self.typing_refines()
+                    && !key.modifiers.control_key
+                    && let Some(digit) = key.keysym.digit_value()
+                {
+                    return self.select_shown_candidate(digit);
+                }
+
+                // A printable character either refines the reading in place
+                // (live conversion) or commits the selection and starts the
+                // next input (manual conversion) — see `typing_refines`.
                 if key.to_char().is_some() && !key.modifiers.control_key {
-                    return self.refine_through_composing(key, shift_active);
+                    return if self.typing_refines() {
+                        self.refine_through_composing(key, shift_active)
+                    } else {
+                        self.commit_conversion_and_continue(key, shift_active)
+                    };
                 }
 
                 // Everything else is consumed as a no-op — leaked chords
@@ -893,6 +920,41 @@ impl InputMethodEngine {
         {
             return self.start_conversion_with_filter(source);
         }
+        result
+    }
+
+    /// Fork-only: commit the selected candidate, then let the same keystroke
+    /// start the next input (mozc's commit-and-continue).
+    ///
+    /// The commit goes through [`Self::commit_conversion`], the Enter path,
+    /// so a partial conversion's unconverted tail resumes in Composing
+    /// exactly as Enter leaves it instead of being dropped. The keystroke
+    /// then runs through the ordinary handlers, so Shift+letter (alphabet
+    /// mode), `:` (emoji mode) and the rest keep the meaning they have
+    /// anywhere else.
+    ///
+    /// `suppress_suggest` covers the commit so the tail path's intermediate
+    /// auto-suggest is not inferred twice — the keystroke below renders the
+    /// state the user actually ends up in.
+    fn commit_conversion_and_continue(
+        &mut self,
+        key: &KeyEvent,
+        shift_active: bool,
+    ) -> EngineResult {
+        self.suppress_suggest = true;
+        let mut result = self.commit_conversion();
+        self.suppress_suggest = false;
+
+        // Nothing was committed (empty selection): leave the conversion
+        // alone rather than feeding the key into a state that never changed.
+        let follow = match self.state {
+            InputState::Conversion { .. } => return result,
+            InputState::Empty => self.process_key_empty(key, shift_active),
+            InputState::Composing { .. } => self.process_key_composing(key, shift_active),
+        };
+
+        result.actions.extend(follow.actions);
+        result.consumed = true;
         result
     }
 
