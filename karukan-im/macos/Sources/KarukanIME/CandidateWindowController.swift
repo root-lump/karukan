@@ -12,6 +12,10 @@ class CandidateWindowController {
     private static let candidateFontSize: CGFloat = 18
     private static let footerFontSize: CGFloat = 13
     private static let minPanelWidth: CGFloat = 160
+    private static let rowSpacing: CGFloat = 4
+    private static let contentInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+    private static let panelVerticalPadding: CGFloat = 8
+    private static let panelHorizontalPadding: CGFloat = 16
 
     private let panel: NSPanel
     private let stackView: NSStackView
@@ -42,8 +46,8 @@ class CandidateWindowController {
         stackView = NSStackView()
         stackView.orientation = .vertical
         stackView.alignment = .leading
-        stackView.spacing = 4
-        stackView.edgeInsets = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        stackView.spacing = Self.rowSpacing
+        stackView.edgeInsets = Self.contentInsets
         stackView.translatesAutoresizingMaskIntoConstraints = false
 
         panel.contentView?.addSubview(stackView)
@@ -175,8 +179,8 @@ class CandidateWindowController {
 
         stackView.layoutSubtreeIfNeeded()
         let contentSize = stackView.fittingSize
-        let panelWidth = max(contentSize.width + 16, Self.minPanelWidth)
-        let panelHeight = contentSize.height + 8
+        let panelWidth = max(contentSize.width + Self.panelHorizontalPadding, Self.minPanelWidth)
+        let panelHeight = contentSize.height + Self.panelVerticalPadding
 
         guard cursorRect != .zero else {
             panel.setFrame(
@@ -185,25 +189,85 @@ class CandidateWindowController {
             return
         }
 
-        // Flip above the cursor when the panel would fall off the bottom of
-        // the screen.
-        let showAbove: Bool
-        if let screen = NSScreen.main {
-            showAbove = cursorRect.origin.y - panelHeight < screen.visibleFrame.origin.y
+        let placement: PanelPlacement
+        if let screen = Self.screen(containing: cursorRect) {
+            placement = Self.placement(
+                cursorRect: cursorRect,
+                maxPanelHeight: Self.maxPanelHeight,
+                screenVisibleFrame: screen.visibleFrame
+            )
         } else {
-            showAbove = false
+            placement = .below
         }
 
         let originY: CGFloat
-        if showAbove {
-            originY = cursorRect.origin.y + cursorRect.size.height
-        } else {
-            originY = cursorRect.origin.y - panelHeight
+        switch placement {
+        case .above:
+            originY = cursorRect.maxY
+        case .below:
+            originY = cursorRect.minY - panelHeight
         }
 
         panel.setFrame(
             NSRect(x: cursorRect.origin.x, y: originY, width: panelWidth, height: panelHeight),
             display: true)
         panel.orderFront(nil)
+    }
+
+    /// Upper bound on the number of candidate rows: the engine sends one
+    /// pre-paginated page, and the page size is `CandidateList::DEFAULT_PAGE_SIZE`
+    /// (karukan-im/core/src/core/candidate.rs).
+    private static let maxCandidateRows = 9
+    /// Page indicator + aux line.
+    private static let maxFooterRows = 2
+
+    /// Height of the tallest panel this controller can render. Measured once:
+    /// the row heights depend only on the fonts, which are constants.
+    private static let maxPanelHeight: CGFloat = {
+        let candidateRow = measuredRowHeight(font: .systemFont(ofSize: candidateFontSize))
+        let footerRow = measuredRowHeight(font: .systemFont(ofSize: footerFontSize))
+        let rows = maxCandidateRows + maxFooterRows
+        return CGFloat(maxCandidateRows) * candidateRow
+            + CGFloat(maxFooterRows) * footerRow
+            + CGFloat(rows - 1) * rowSpacing
+            + contentInsets.top + contentInsets.bottom
+            + panelVerticalPadding
+    }()
+
+    private static func measuredRowHeight(font: NSFont) -> CGFloat {
+        let label = NSTextField(labelWithString: "あ")
+        label.font = font
+        return label.fittingSize.height
+    }
+
+    /// Which side of the composition anchor the panel is placed on.
+    enum PanelPlacement: Equatable {
+        case below
+        case above
+    }
+
+    /// Decide the side from the *maximum* panel height rather than the current
+    /// one: the candidate count changes on every keystroke, and deciding from
+    /// the current height makes the panel flip sides mid-composition.
+    static func placement(
+        cursorRect: NSRect, maxPanelHeight: CGFloat, screenVisibleFrame: NSRect
+    ) -> PanelPlacement {
+        let spaceBelow = cursorRect.minY - screenVisibleFrame.minY
+        let spaceAbove = screenVisibleFrame.maxY - cursorRect.maxY
+        if spaceBelow >= maxPanelHeight {
+            return .below
+        }
+        if spaceAbove >= maxPanelHeight {
+            return .above
+        }
+        // Neither side fits: take the roomier one, so the most candidates stay
+        // visible. Ties keep the historical default.
+        return spaceAbove > spaceBelow ? .above : .below
+    }
+
+    // `frame`, not `visibleFrame`: the cursor may sit under the menu bar or
+    // Dock, and `visibleFrame` excludes those strips from every screen.
+    private static func screen(containing rect: NSRect) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.intersects(rect) } ?? NSScreen.main
     }
 }
