@@ -648,6 +648,16 @@ impl InputMethodEngine {
 
     /// Process a key event
     pub fn process_key(&mut self, key: &KeyEvent) -> EngineResult {
+        // The window height belongs to one conversion, and a key arriving
+        // outside the Conversion state is the only thing that can start the
+        // next one. Deciding it here rather than where a conversion is built
+        // is what keeps the internal rebuilds out of it: Ctrl+J and a
+        // refining keystroke both dip through Composing to rebuild the
+        // conversion they are already in.
+        if !matches!(self.state, InputState::Conversion { .. }) {
+            self.conversion_expanded = false;
+        }
+
         // Install converters the background loader has finished; never blocks.
         self.poll_loaded_models();
 

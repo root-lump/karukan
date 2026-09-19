@@ -135,11 +135,6 @@ impl InputMethodEngine {
                 // composition (and its keystrokes) is converted, then leave
                 // composing state behind. The cursor position is ignored:
                 // like mozc, a function key converts the entire composition.
-                //
-                // This is the one way into the Conversion state that does not
-                // go through `split_composition_at_caret`, so the new
-                // conversion's window height is reset here instead.
-                self.conversion_expanded = false;
                 self.settle_romaji();
                 self.conversion_raw = Some(self.input_buf.raw_text());
                 self.live.shown = false;
@@ -163,7 +158,7 @@ impl InputMethodEngine {
             return EngineResult::consumed();
         }
 
-        let candidates = CandidateList::new(
+        let candidates = self.collapsed_candidate_list(
             variants
                 .into_iter()
                 .map(|(text, description)| Candidate {

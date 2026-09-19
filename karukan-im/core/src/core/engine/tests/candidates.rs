@@ -528,3 +528,83 @@ fn a_new_conversion_starts_collapsed_again() {
         "the next conversion opens at num_suggestions rows again"
     );
 }
+
+#[test]
+fn a_chunk_break_keeps_the_window_expanded() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    for _ in 0..4 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE
+    );
+
+    // Ctrl+J rebuilds the conversion through the composing path, but it is
+    // the same conversion, so the height survives.
+    engine.process_key(&press_ctrl(Keysym::KEY_J));
+
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE,
+        "a chunk break must not collapse the window"
+    );
+}
+
+#[test]
+fn a_chunk_break_inside_a_filtered_view_keeps_the_window_expanded() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+    // Ctrl+T twice: learning (empty), then the 📚 view with the fixture's
+    // four surfaces. It opens collapsed; walking to the 4th expands it.
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    for _ in 0..3 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE
+    );
+
+    engine.process_key(&press_ctrl(Keysym::KEY_J));
+
+    assert_eq!(
+        engine.state().filter(),
+        Some(CandidateSource::Dictionary),
+        "test setup: the chunk break must keep the narrowed view"
+    );
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE,
+        "rebuilding the view in place must not collapse the window"
+    );
+}
+
+#[test]
+fn a_function_key_list_starts_at_num_suggestions() {
+    let mut engine = engine_with_collapsed_conversion(1);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::F9));
+
+    let list = conversion_list(&engine);
+    assert!(
+        list.len() > 1,
+        "test setup: F9 must offer several forms, got {}",
+        list.len()
+    );
+    assert_eq!(
+        list.page_candidates().len(),
+        1,
+        "the function-key list opens at num_suggestions rows too"
+    );
+}

@@ -191,13 +191,6 @@ impl InputMethodEngine {
     /// through here, so Space and the source-filter keys (Ctrl+I / Ctrl+T /
     /// Ctrl+R) cover the same range: what the caret bounds.
     pub(super) fn split_composition_at_caret(&mut self) -> ConversionRange {
-        // A conversion starting here is a new one, so its window starts
-        // collapsed again. This and the function-key conversion in `form.rs`
-        // are the only ways into the Conversion state from a composition;
-        // every other list rebuild is the same conversion carrying on and
-        // keeps the height the user chose.
-        self.conversion_expanded = false;
-
         // Resolve the reading without touching the composition: pending
         // romaji stays live so cancelling the conversion returns to an
         // editable buffer (けいおうd → Tab → Esc → `a` → けいおうだ)
