@@ -191,6 +191,13 @@ impl InputMethodEngine {
     /// through here, so Space and the source-filter keys (Ctrl+I / Ctrl+T /
     /// Ctrl+R) cover the same range: what the caret bounds.
     pub(super) fn split_composition_at_caret(&mut self) -> ConversionRange {
+        // A conversion starting here is a new one, so its window starts
+        // collapsed again. This and the function-key conversion in `form.rs`
+        // are the only ways into the Conversion state from a composition;
+        // every other list rebuild is the same conversion carrying on and
+        // keeps the height the user chose.
+        self.conversion_expanded = false;
+
         // Resolve the reading without touching the composition: pending
         // romaji stays live so cancelling the conversion returns to an
         // editable buffer (けいおうd → Tab → Esc → `a` → けいおうだ)
@@ -325,6 +332,7 @@ impl InputMethodEngine {
             // opens with, which is just as much "the user is on a candidate
             // the window is not showing" as navigating there.
             candidate_list.expand_if_cursor_past_page();
+            self.sync_conversion_expanded(&candidate_list);
         }
         self.enter_conversion_state(&reading, candidate_list)
     }
@@ -379,6 +387,13 @@ impl InputMethodEngine {
         reading: &str,
         candidates: CandidateList,
     ) -> EngineResult {
+        // Every path that builds a conversion list ends here, so applying
+        // the window height once in this spot covers the rebuilds too —
+        // segment navigation, a deleted learning entry, a refined reading.
+        let mut candidates = candidates;
+        if self.conversion_expanded {
+            candidates.expand_page();
+        }
         let selected_text = candidates.selected_text().unwrap_or(reading).to_string();
         let preedit = self.build_conversion_preedit(&selected_text);
 
@@ -397,6 +412,14 @@ impl InputMethodEngine {
             .with_action(EngineAction::UpdatePreedit(preedit))
             .with_action(EngineAction::ShowCandidates(candidates))
             .with_action(EngineAction::UpdateAuxText(aux))
+    }
+
+    /// Record that `candidates` is showing a full page, so the next list
+    /// built for this conversion opens at that height too. Called wherever
+    /// a list can grow, rather than each of those places deciding for
+    /// itself what "grown" means.
+    fn sync_conversion_expanded(&mut self, candidates: &CandidateList) {
+        self.conversion_expanded |= candidates.is_expanded();
     }
 
     /// Dictionary candidates for a reading: user dict first, then system,
@@ -1335,6 +1358,7 @@ impl InputMethodEngine {
             let text = candidates.selected_text().unwrap_or("").to_string();
             (text, candidates.clone())
         };
+        self.sync_conversion_expanded(&candidates);
         self.update_conversion_preedit(&selected_text, candidates)
     }
 
@@ -1401,18 +1425,16 @@ impl InputMethodEngine {
         self.convert_reading_preselect(reading, None)
     }
 
-    /// Like [`convert_reading`], but restores `segment`'s state as the
-    /// default when given. Used when re-entering a segment the user already
-    /// converted (Left/Right navigation) so their previous choice survives
-    /// the round trip; if the rebuilt candidate list no longer contains it,
-    /// it is inserted at the top. The window height travels with the
-    /// segment too, since the restored cursor cannot imply it.
+    /// Like [`convert_reading`], but re-selects `preselect` as the default
+    /// candidate when given. Used when re-entering a segment the user
+    /// already converted (Left/Right navigation) so their previous choice
+    /// survives the round trip; if the rebuilt candidate list no longer
+    /// contains it, it is inserted at the top.
     fn convert_reading_preselect(
         &mut self,
         reading: &str,
-        segment: Option<&ConvertedSegment>,
+        preselect: Option<&str>,
     ) -> EngineResult {
-        let preselect = segment.map(|seg| seg.text.as_str());
         // Segment navigation moves the conversion boundary, so the raw
         // keystrokes can no longer be attributed to this segment.
         self.input_buf.set_text(reading);
@@ -1450,13 +1472,6 @@ impl InputMethodEngine {
         }
 
         let mut candidate_list = self.to_conversion_candidate_list(candidates, reading);
-        // The height belongs to the segment, not to the candidate the cursor
-        // lands on: the user expanded this window earlier in the same
-        // conversion, and walking back to the first candidate did not undo
-        // that.
-        if segment.is_some_and(|seg| seg.expanded) {
-            candidate_list.expand_page();
-        }
         if let Some(preferred) = preselect
             && let Some(idx) = candidate_list
                 .candidates()
@@ -1464,17 +1479,12 @@ impl InputMethodEngine {
                 .position(|c| c.text == preferred)
         {
             candidate_list.select(idx);
+            // As above: a restored selection past the first page is the user
+            // sitting on a candidate the window is not showing.
             candidate_list.expand_if_cursor_past_page();
+            self.sync_conversion_expanded(&candidate_list);
         }
         self.enter_conversion_state(reading, candidate_list)
-    }
-
-    /// Whether the candidate window is currently showing a full page —
-    /// recorded on a segment the user is leaving.
-    fn candidates_expanded(&self) -> bool {
-        self.state
-            .candidates()
-            .is_some_and(CandidateList::is_expanded)
     }
 
     /// Confirm current segment and move right (Right arrow): re-enter the
@@ -1495,12 +1505,11 @@ impl InputMethodEngine {
         self.confirmed_segments.push(ConvertedSegment {
             text,
             reading: seg_reading,
-            expanded: self.candidates_expanded(),
         });
 
         if has_upcoming {
             let next = self.upcoming_segments.remove(0);
-            self.convert_reading_preselect(&next.reading, Some(&next))
+            self.convert_reading_preselect(&next.reading, Some(&next.text))
         } else {
             let tail = self.conversion_tail.take().unwrap_or_default();
             self.convert_reading(&tail)
@@ -1522,12 +1531,11 @@ impl InputMethodEngine {
                 ConvertedSegment {
                     text,
                     reading: seg_reading,
-                    expanded: self.candidates_expanded(),
                 },
             );
         }
 
-        self.convert_reading_preselect(&prev.reading, Some(&prev))
+        self.convert_reading_preselect(&prev.reading, Some(&prev.text))
     }
 
     /// Dissolve `upcoming_segments` back into the raw `conversion_tail`

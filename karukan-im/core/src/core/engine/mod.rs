@@ -198,6 +198,13 @@ pub struct InputMethodEngine {
     /// arrow pops the front entry to re-enter it with its previous selection
     /// intact, so stepping back doesn't revert converted segments to raw kana.
     upcoming_segments: Vec<ConvertedSegment>,
+    /// Whether the candidate window has been grown to a full page during
+    /// the current conversion. The candidate list is rebuilt by several
+    /// paths — segment navigation, deleting a learning entry, re-entering a
+    /// filtered view — and a rebuilt list cannot say by itself how tall the
+    /// window was, so the answer lives here and is applied wherever the
+    /// Conversion state is entered.
+    conversion_expanded: bool,
     /// Receiver for the background model-loading thread: model resolution
     /// can block on the network, so it never runs on the key-event thread.
     /// Drained by `poll_loaded_models` at the top of `process_key`; until
@@ -227,6 +234,7 @@ impl InputMethodEngine {
             chunk_breaks: Vec::new(),
             conversion_cache: ConversionCache::default(),
             suppress_suggest: false,
+            conversion_expanded: false,
             shown_suggestions: CandidateList::default(),
             dicts: Dictionaries::default(),
             learning: None,

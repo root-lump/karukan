@@ -462,3 +462,69 @@ fn segment_roundtrip_keeps_the_window_expanded_from_the_first_candidate() {
         "the window must stay expanded across the segment round trip"
     );
 }
+
+#[test]
+fn deleting_a_learning_entry_keeps_the_window_expanded() {
+    let mut engine = engine_with_collapsed_conversion(3);
+    let mut cache = LearningCache::new(LearningConfig::default());
+    cache.record("あい", "藍");
+    engine.learning = Some(cache);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    for _ in 0..4 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE
+    );
+
+    // Back to the learning candidate at the top and delete it. The list is
+    // rebuilt from scratch, which must not undo the height.
+    for _ in 0..3 {
+        engine.process_key(&press_key(Keysym::UP));
+    }
+    assert!(
+        conversion_list(&engine)
+            .selected()
+            .is_some_and(|c| c.is_deletable()),
+        "test setup: the learning candidate must be selected"
+    );
+    engine.process_key(&press_ctrl(Keysym::BACKSPACE));
+
+    assert!(engine.learning.as_ref().unwrap().lookup("あい").is_empty());
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE,
+        "deleting a learning entry rebuilds the list, but it is the same \
+         conversion, so the window stays expanded"
+    );
+}
+
+#[test]
+fn a_new_conversion_starts_collapsed_again() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    for _ in 0..4 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE
+    );
+
+    engine.process_key(&press_key(Keysym::RETURN));
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let list = conversion_list(&engine);
+    assert_eq!(
+        list.page_candidates().len(),
+        3,
+        "the next conversion opens at num_suggestions rows again"
+    );
+}

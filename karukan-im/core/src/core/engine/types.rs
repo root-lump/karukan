@@ -310,12 +310,6 @@ pub(in crate::core) struct ConvertedSegment {
     pub text: String,
     /// Hiragana reading `text` was converted from (e.g. `あい`).
     pub reading: String,
-    /// Whether the candidate window was showing a full page while this
-    /// segment was being converted. Re-entering the segment rebuilds its
-    /// candidate list from scratch, and the restored cursor no longer says
-    /// how tall the window was once the user has walked back to the first
-    /// candidate, so the height travels with the segment instead.
-    pub expanded: bool,
 }
 
 /// Live conversion state. The displayed text itself is not stored: it is

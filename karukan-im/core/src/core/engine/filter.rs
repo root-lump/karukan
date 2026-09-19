@@ -117,9 +117,11 @@ impl InputMethodEngine {
             return EngineResult::not_consumed();
         };
         let view = self.source_view(next, &reading);
-        // A fresh list, so it starts collapsed again: switching views means
-        // a different set of candidates, which is worth showing from the top
-        // rather than in whatever height the previous view had grown to.
+        // Switching views means a different set of candidates, worth showing
+        // from the top rather than in whatever height the previous view had
+        // grown to — the one case besides starting a conversion where the
+        // window goes back to its collapsed height.
+        self.conversion_expanded = false;
         let list = self.collapsed_candidate_list(view);
         let selected = list.selected_text().unwrap_or(&reading).to_string();
         // Built like the mixed list's preedit so a partial conversion keeps
