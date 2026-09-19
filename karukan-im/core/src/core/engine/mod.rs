@@ -609,10 +609,17 @@ impl InputMethodEngine {
     /// Same list as [`settle_candidates`](Self::settle_candidates), but
     /// showing only `num_suggestions` candidates at a time — what the
     /// conversion window opens with until the user asks for more.
+    ///
+    /// Capped at a full page: a page is the unit the frontends are built
+    /// around (the macOS candidate window sizes itself for at most
+    /// `DEFAULT_PAGE_SIZE` rows), so a larger `num_suggestions` would send
+    /// more rows than they are prepared to place.
     fn collapsed_candidate_list(&self, candidates: Vec<Candidate>) -> CandidateList {
         CandidateList::with_page_size(
             self.settled_candidates(candidates),
-            self.config.num_suggestions.max(1),
+            self.config
+                .num_suggestions
+                .clamp(1, CandidateList::DEFAULT_PAGE_SIZE),
         )
     }
 

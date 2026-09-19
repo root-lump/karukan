@@ -321,6 +321,10 @@ impl InputMethodEngine {
                 .position(|c| c.text == *prev)
         {
             candidate_list.select(idx);
+            // Restoring a selection can land past the rows the rebuilt list
+            // opens with, which is just as much "the user is on a candidate
+            // the window is not showing" as navigating there.
+            candidate_list.expand_if_cursor_past_page();
         }
         self.enter_conversion_state(&reading, candidate_list)
     }
@@ -1327,14 +1331,7 @@ impl InputMethodEngine {
                 return EngineResult::consumed();
             }
             op(candidates);
-            // A collapsed list starts at `num_suggestions` rows; the moment
-            // the cursor leaves that first page the user has asked for more
-            // than the window shows, so grow it to the full page and keep it
-            // there for the rest of this conversion. Shrinking back on the
-            // way up would make the window breathe as the cursor moves.
-            if candidates.is_collapsed() && candidates.cursor() >= candidates.page_size() {
-                candidates.expand_page();
-            }
+            candidates.expand_if_cursor_past_page();
             let text = candidates.selected_text().unwrap_or("").to_string();
             (text, candidates.clone())
         };
@@ -1458,6 +1455,10 @@ impl InputMethodEngine {
                 .position(|c| c.text == preferred)
         {
             candidate_list.select(idx);
+            // Restoring a selection can land past the rows the rebuilt list
+            // opens with, which is just as much "the user is on a candidate
+            // the window is not showing" as navigating there.
+            candidate_list.expand_if_cursor_past_page();
         }
         self.enter_conversion_state(reading, candidate_list)
     }

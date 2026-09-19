@@ -367,3 +367,58 @@ fn composing_suggestions_are_never_paginated() {
          here would show up at every keystroke"
     );
 }
+
+#[test]
+fn conversion_window_never_opens_past_a_full_page() {
+    let mut engine = engine_with_collapsed_conversion(10);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let list = conversion_list(&engine);
+    assert!(list.len() > CandidateList::DEFAULT_PAGE_SIZE);
+    assert_eq!(
+        list.page_candidates().len(),
+        CandidateList::DEFAULT_PAGE_SIZE,
+        "num_suggestions above a full page must cap at one"
+    );
+}
+
+#[test]
+fn restoring_a_selection_keeps_the_window_expanded() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    // Convert only 「あい」, leaving 「うえお」 as a segment to its right.
+    for ch in ['a', 'i', 'u', 'e', 'o'] {
+        engine.process_key(&press(ch));
+    }
+    for _ in 0..3 {
+        engine.process_key(&press_key(Keysym::LEFT));
+    }
+    for _ in 0..4 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    let list = conversion_list(&engine);
+    assert_eq!(list.cursor(), 3);
+    assert_eq!(list.page_size(), CandidateList::DEFAULT_PAGE_SIZE);
+    let selected = list.selected_text().expect("selection").to_string();
+
+    // Into the next segment and back. The first segment's list is rebuilt
+    // from scratch and the selection restored into it, so the window must
+    // come back at the height it had, not at the collapsed one.
+    engine.process_key(&press_key(Keysym::RIGHT));
+    engine.process_key(&press_key(Keysym::LEFT));
+
+    let list = conversion_list(&engine);
+    assert_eq!(
+        list.selected_text(),
+        Some(selected.as_str()),
+        "test setup: the segment must restore its previous selection"
+    );
+    assert_eq!(
+        list.page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE,
+        "a restored selection past the first page must keep the window expanded"
+    );
+}

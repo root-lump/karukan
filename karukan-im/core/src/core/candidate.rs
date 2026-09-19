@@ -150,19 +150,25 @@ impl CandidateList {
         }
     }
 
-    /// Whether the list is showing fewer candidates per page than the full
-    /// page. Doubles as "has this list been expanded yet?": nothing else
-    /// tracks that, because a narrowed source view builds a fresh list and
-    /// so starts collapsed again without anything having to reset a flag.
-    pub fn is_collapsed(&self) -> bool {
-        self.page_size < Self::DEFAULT_PAGE_SIZE
-    }
-
-    /// Grow the page to the full size, keeping the cursor on the same
-    /// candidate. The cursor is an absolute index, so nothing needs
-    /// adjusting — only which page it falls on changes.
-    pub fn expand_page(&mut self) {
-        self.page_size = Self::DEFAULT_PAGE_SIZE;
+    /// Grow a collapsed page to the full size once the cursor sits past the
+    /// rows the list opened with: the selection the user is on is no longer
+    /// one the window was showing, so the window has to hold a full page
+    /// from here on. Every path that moves the cursor — navigating, and
+    /// restoring a selection into a rebuilt list — calls this, so the whole
+    /// rule lives in one place and a new path cannot half-implement it.
+    ///
+    /// Only ever grows. Shrinking back would make the window breathe as the
+    /// cursor moves up and down. Nothing tracks "has this been expanded"
+    /// separately: the page size itself says so, and a narrowed source view
+    /// builds a fresh list, so it starts collapsed again without anything
+    /// having to reset a flag.
+    ///
+    /// The cursor is an absolute index, so growing the page leaves it on the
+    /// same candidate — only which page it falls on changes.
+    pub fn expand_if_cursor_past_page(&mut self) {
+        if self.page_size < Self::DEFAULT_PAGE_SIZE && self.cursor >= self.page_size {
+            self.page_size = Self::DEFAULT_PAGE_SIZE;
+        }
     }
 
     /// Create a candidate list from strings (test fixture).
@@ -400,6 +406,26 @@ mod tests {
         // Wrap to first page
         candidates.next_page();
         assert_eq!(candidates.current_page(), 0);
+    }
+
+    #[test]
+    fn test_candidate_list_expand_only_past_the_first_page() {
+        let items: Vec<_> = (1..=20).map(|i| format!("item{}", i)).collect();
+        let mut candidates = CandidateList::from_strings(items);
+        candidates.page_size = 3;
+
+        candidates.set_cursor(2);
+        candidates.expand_if_cursor_past_page();
+        assert_eq!(candidates.page_size(), 3, "still on the first page");
+
+        candidates.set_cursor(3);
+        candidates.expand_if_cursor_past_page();
+        assert_eq!(candidates.page_size(), CandidateList::DEFAULT_PAGE_SIZE);
+
+        // Only ever grows: back on the first page it stays expanded.
+        candidates.set_cursor(0);
+        candidates.expand_if_cursor_past_page();
+        assert_eq!(candidates.page_size(), CandidateList::DEFAULT_PAGE_SIZE);
     }
 
     #[test]
