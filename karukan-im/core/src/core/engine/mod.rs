@@ -198,6 +198,13 @@ pub struct InputMethodEngine {
     /// arrow pops the front entry to re-enter it with its previous selection
     /// intact, so stepping back doesn't revert converted segments to raw kana.
     upcoming_segments: Vec<ConvertedSegment>,
+    /// Whether the candidate window has been grown to a full page during
+    /// the current conversion. The candidate list is rebuilt by several
+    /// paths — segment navigation, deleting a learning entry, re-entering a
+    /// filtered view — and a rebuilt list cannot say by itself how tall the
+    /// window was, so the answer lives here and is applied wherever the
+    /// Conversion state is entered.
+    conversion_expanded: bool,
     /// Receiver for the background model-loading thread: model resolution
     /// can block on the network, so it never runs on the key-event thread.
     /// Drained by `poll_loaded_models` at the top of `process_key`; until
@@ -227,6 +234,7 @@ impl InputMethodEngine {
             chunk_breaks: Vec::new(),
             conversion_cache: ConversionCache::default(),
             suppress_suggest: false,
+            conversion_expanded: false,
             shown_suggestions: CandidateList::default(),
             dicts: Dictionaries::default(),
             learning: None,
@@ -595,9 +603,39 @@ impl InputMethodEngine {
     /// rewriter's `１` come out `１`) and only the first survives — dropped
     /// here rather than at display time, since this list is also what
     /// Ctrl+digit indexes and commit reads.
+    ///
+    /// The page size is left at the default here, and deliberately not made
+    /// to follow `num_suggestions`: the composing suggestion window goes
+    /// through this too, and a smaller page would split that list into pages,
+    /// putting a page indicator on screen at every keystroke. Only the
+    /// conversion window starts collapsed, via
+    /// [`collapsed_candidate_list`](Self::collapsed_candidate_list).
     fn settle_candidates(&self, candidates: Vec<Candidate>) -> CandidateList {
+        CandidateList::new(self.settled_candidates(candidates))
+    }
+
+    /// Same list as [`settle_candidates`](Self::settle_candidates), but
+    /// showing only `num_suggestions` candidates at a time — what the
+    /// conversion window opens with until the user asks for more.
+    ///
+    /// Capped at a full page: a page is the unit the frontends are built
+    /// around (the macOS candidate window sizes itself for at most
+    /// `DEFAULT_PAGE_SIZE` rows), so a larger `num_suggestions` would send
+    /// more rows than they are prepared to place.
+    fn collapsed_candidate_list(&self, candidates: Vec<Candidate>) -> CandidateList {
+        CandidateList::with_page_size(
+            self.settled_candidates(candidates),
+            self.config
+                .num_suggestions
+                .clamp(1, CandidateList::DEFAULT_PAGE_SIZE),
+        )
+    }
+
+    /// Settle the model's answers and drop duplicates; see
+    /// [`settle_candidates`](Self::settle_candidates).
+    fn settled_candidates(&self, candidates: Vec<Candidate>) -> Vec<Candidate> {
         let mut seen = HashSet::new();
-        let settled = candidates
+        candidates
             .into_iter()
             .filter_map(|mut candidate| {
                 if candidate.source == Some(CandidateSource::Model) {
@@ -605,12 +643,21 @@ impl InputMethodEngine {
                 }
                 seen.insert(candidate.text.clone()).then_some(candidate)
             })
-            .collect();
-        CandidateList::new(settled)
+            .collect()
     }
 
     /// Process a key event
     pub fn process_key(&mut self, key: &KeyEvent) -> EngineResult {
+        // The window height belongs to one conversion, and a key arriving
+        // outside the Conversion state is the only thing that can start the
+        // next one. Deciding it here rather than where a conversion is built
+        // is what keeps the internal rebuilds out of it: Ctrl+J and a
+        // refining keystroke both dip through Composing to rebuild the
+        // conversion they are already in.
+        if !matches!(self.state, InputState::Conversion { .. }) {
+            self.conversion_expanded = false;
+        }
+
         // Install converters the background loader has finished; never blocks.
         self.poll_loaded_models();
 

@@ -43,7 +43,12 @@ impl InputMethodEngine {
     /// conversion first when composing.
     pub(super) fn jump_to_source(&mut self, source: CandidateSource) -> EngineResult {
         match &self.state {
-            InputState::Conversion { .. } => self.apply_candidate_filter(source),
+            InputState::Conversion { .. } => {
+                // Switching to another view means a different set of
+                // candidates, worth showing from the top.
+                self.conversion_expanded = false;
+                self.apply_candidate_filter(source)
+            }
             InputState::Composing { .. } => self.start_conversion_with_filter(source),
             InputState::Empty => EngineResult::not_consumed(),
         }
@@ -68,6 +73,9 @@ impl InputMethodEngine {
                 (if forward { pos + 1 } else { pos + len - 1 }) % len
             }
         };
+        // As in `jump_to_source`: stepping to another view starts it from
+        // the top.
+        self.conversion_expanded = false;
         self.apply_candidate_filter(FILTER_CYCLE[pos])
     }
 
@@ -117,7 +125,14 @@ impl InputMethodEngine {
             return EngineResult::not_consumed();
         };
         let view = self.source_view(next, &reading);
-        let list = self.settle_candidates(view);
+        // Not a reset point: this also rebuilds the current view in place
+        // (a deleted learning entry, a refined reading), which is the same
+        // conversion carrying on. The keys that switch views reset the
+        // height themselves, so only they start a view from the top.
+        let mut list = self.collapsed_candidate_list(view);
+        if self.conversion_expanded {
+            list.expand_page();
+        }
         let selected = list.selected_text().unwrap_or(&reading).to_string();
         // Built like the mixed list's preedit so a partial conversion keeps
         // showing its unconverted tail while the view is narrowed.

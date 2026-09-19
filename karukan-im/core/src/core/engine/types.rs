@@ -71,6 +71,10 @@ pub(in crate::core) struct SurroundingContext {
 pub struct EngineConfig {
     /// Number of conversion candidates for explicit conversion (Space key)
     pub num_candidates: usize,
+    /// Number of candidates the candidate window shows to begin with —
+    /// the composing suggestion list, and the conversion list until the
+    /// cursor leaves that first page (it then grows to a full page)
+    pub num_suggestions: usize,
     /// Maximum context length to display
     pub display_context_chars: usize,
     /// Maximum context length for API calls (to avoid overflow)
@@ -132,6 +136,7 @@ impl EngineConfig {
     pub fn from_settings(settings: &crate::config::Settings) -> Self {
         Self {
             num_candidates: settings.conversion.num_candidates,
+            num_suggestions: settings.conversion.num_suggestions,
             display_context_chars: 10,
             context_chars: if settings.conversion.use_context {
                 settings.conversion.context_chars
@@ -165,6 +170,7 @@ impl Default for EngineConfig {
     fn default() -> Self {
         Self {
             num_candidates: 3, // Space conversion: beam search with 3 candidates
+            num_suggestions: 3,
             display_context_chars: 10,
             context_chars: 10,
             chunk_chars: 30,

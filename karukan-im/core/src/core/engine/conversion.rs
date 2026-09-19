@@ -321,18 +321,24 @@ impl InputMethodEngine {
                 .position(|c| c.text == *prev)
         {
             candidate_list.select(idx);
+            // Restoring a selection can land past the rows the rebuilt list
+            // opens with, which is just as much "the user is on a candidate
+            // the window is not showing" as navigating there.
+            candidate_list.expand_if_cursor_past_page();
+            self.sync_conversion_expanded(&candidate_list);
         }
         self.enter_conversion_state(&reading, candidate_list)
     }
 
     /// Map builder output to the public [`CandidateList`] shown in the
-    /// conversion window, settled at the configured width.
+    /// conversion window, settled at the configured width and collapsed to
+    /// the `num_suggestions` rows the window opens with.
     fn to_conversion_candidate_list(
         &self,
         candidates: Vec<AnnotatedCandidate>,
         reading: &str,
     ) -> CandidateList {
-        self.settle_candidates(
+        self.collapsed_candidate_list(
             candidates
                 .into_iter()
                 .map(|ac| ac.into_candidate(reading))
@@ -374,6 +380,13 @@ impl InputMethodEngine {
         reading: &str,
         candidates: CandidateList,
     ) -> EngineResult {
+        // Every path that builds a conversion list ends here, so applying
+        // the window height once in this spot covers the rebuilds too —
+        // segment navigation, a deleted learning entry, a refined reading.
+        let mut candidates = candidates;
+        if self.conversion_expanded {
+            candidates.expand_page();
+        }
         let selected_text = candidates.selected_text().unwrap_or(reading).to_string();
         let preedit = self.build_conversion_preedit(&selected_text);
 
@@ -392,6 +405,14 @@ impl InputMethodEngine {
             .with_action(EngineAction::UpdatePreedit(preedit))
             .with_action(EngineAction::ShowCandidates(candidates))
             .with_action(EngineAction::UpdateAuxText(aux))
+    }
+
+    /// Record that `candidates` is showing a full page, so the next list
+    /// built for this conversion opens at that height too. Called wherever
+    /// a list can grow, rather than each of those places deciding for
+    /// itself what "grown" means.
+    fn sync_conversion_expanded(&mut self, candidates: &CandidateList) {
+        self.conversion_expanded |= candidates.is_expanded();
     }
 
     /// Dictionary candidates for a reading: user dict first, then system,
@@ -1326,9 +1347,11 @@ impl InputMethodEngine {
                 return EngineResult::consumed();
             }
             op(candidates);
+            candidates.expand_if_cursor_past_page();
             let text = candidates.selected_text().unwrap_or("").to_string();
             (text, candidates.clone())
         };
+        self.sync_conversion_expanded(&candidates);
         self.update_conversion_preedit(&selected_text, candidates)
     }
 
@@ -1449,6 +1472,10 @@ impl InputMethodEngine {
                 .position(|c| c.text == preferred)
         {
             candidate_list.select(idx);
+            // As above: a restored selection past the first page is the user
+            // sitting on a candidate the window is not showing.
+            candidate_list.expand_if_cursor_past_page();
+            self.sync_conversion_expanded(&candidate_list);
         }
         self.enter_conversion_state(reading, candidate_list)
     }

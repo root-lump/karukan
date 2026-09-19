@@ -158,7 +158,7 @@ impl InputMethodEngine {
             return EngineResult::consumed();
         }
 
-        let candidates = CandidateList::new(
+        let candidates = self.collapsed_candidate_list(
             variants
                 .into_iter()
                 .map(|(text, description)| Candidate {

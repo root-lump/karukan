@@ -125,6 +125,10 @@ pub struct ConversionSettings {
     pub swap_space_tab: bool,
     /// Number of candidates to show on Space conversion
     pub num_candidates: usize,
+    /// Number of candidates the candidate window shows to begin with —
+    /// the composing suggestion list, and the conversion list until the
+    /// cursor leaves that first page (it then grows to a full page)
+    pub num_suggestions: usize,
     /// Use surrounding text (text left of cursor) as context for conversion
     pub use_context: bool,
     /// Maximum number of surrounding text characters passed to the conversion API
@@ -310,6 +314,7 @@ mod tests {
     fn test_default_settings() {
         let settings = Settings::default();
         assert_eq!(settings.conversion.num_candidates, 9);
+        assert_eq!(settings.conversion.num_suggestions, 3);
         assert!(settings.conversion.use_context);
         assert_eq!(settings.conversion.context_chars, 10);
         assert!(settings.learning.enabled);

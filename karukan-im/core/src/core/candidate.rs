@@ -139,6 +139,53 @@ impl CandidateList {
         }
     }
 
+    /// Create a candidate list that shows only `page_size` candidates at a
+    /// time. `0` is clamped to 1 — a zero page size would make every page
+    /// empty and `total_pages` meaningless.
+    pub fn with_page_size(candidates: Vec<Candidate>, page_size: usize) -> Self {
+        Self {
+            candidates,
+            cursor: 0,
+            page_size: page_size.max(1),
+        }
+    }
+
+    /// Grow a collapsed page to the full size once the cursor sits past the
+    /// rows the list opened with: the selection the user is on is no longer
+    /// one the window was showing, so the window has to hold a full page
+    /// from here on. Every path that moves the cursor — navigating, and
+    /// restoring a selection into a rebuilt list — calls this, so the whole
+    /// rule lives in one place and a new path cannot half-implement it.
+    ///
+    /// Only ever grows. Shrinking back would make the window breathe as the
+    /// cursor moves up and down. Nothing tracks "has this been expanded"
+    /// separately: the page size itself says so, and a narrowed source view
+    /// builds a fresh list, so it starts collapsed again without anything
+    /// having to reset a flag.
+    ///
+    /// The cursor is an absolute index, so growing the page leaves it on the
+    /// same candidate — only which page it falls on changes.
+    pub fn expand_if_cursor_past_page(&mut self) {
+        if !self.is_expanded() && self.cursor >= self.page_size {
+            self.expand_page();
+        }
+    }
+
+    /// Whether the page has already been grown to the full size. Segment
+    /// navigation asks this to carry the height across a rebuilt list: once
+    /// the cursor is back on the first candidate, nothing else records that
+    /// the window had been expanded.
+    pub fn is_expanded(&self) -> bool {
+        self.page_size >= Self::DEFAULT_PAGE_SIZE
+    }
+
+    /// Grow the page to the full size whatever the cursor is on, for
+    /// restoring a height that was decided elsewhere. Callers deciding it
+    /// from the cursor use [`expand_if_cursor_past_page`](Self::expand_if_cursor_past_page).
+    pub fn expand_page(&mut self) {
+        self.page_size = Self::DEFAULT_PAGE_SIZE;
+    }
+
     /// Create a candidate list from strings (test fixture).
     #[cfg(test)]
     pub fn from_strings(strings: impl IntoIterator<Item = impl Into<String>>) -> Self {
@@ -304,6 +351,17 @@ impl CandidateList {
     pub fn set_cursor(&mut self, cursor: usize) {
         self.cursor = cursor.min(self.candidates.len().saturating_sub(1));
     }
+
+    /// Keep only the first `limit` candidates, clamping the cursor into range.
+    pub fn truncate(&mut self, limit: usize) {
+        if self.candidates.len() <= limit {
+            return;
+        }
+        self.candidates.truncate(limit);
+        if self.cursor >= limit {
+            self.cursor = limit.saturating_sub(1);
+        }
+    }
 }
 
 impl Default for CandidateList {
@@ -363,6 +421,35 @@ mod tests {
         // Wrap to first page
         candidates.next_page();
         assert_eq!(candidates.current_page(), 0);
+    }
+
+    #[test]
+    fn test_candidate_list_expand_only_past_the_first_page() {
+        let items: Vec<_> = (1..=20).map(|i| format!("item{}", i)).collect();
+        let mut candidates = CandidateList::from_strings(items);
+        candidates.page_size = 3;
+
+        candidates.set_cursor(2);
+        candidates.expand_if_cursor_past_page();
+        assert_eq!(candidates.page_size(), 3, "still on the first page");
+
+        candidates.set_cursor(3);
+        candidates.expand_if_cursor_past_page();
+        assert_eq!(candidates.page_size(), CandidateList::DEFAULT_PAGE_SIZE);
+
+        // Only ever grows: back on the first page it stays expanded.
+        candidates.set_cursor(0);
+        candidates.expand_if_cursor_past_page();
+        assert_eq!(candidates.page_size(), CandidateList::DEFAULT_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_candidate_list_zero_page_size_clamped() {
+        let candidates =
+            CandidateList::with_page_size(vec![Candidate::new("a"), Candidate::new("b")], 0);
+        assert_eq!(candidates.page_size(), 1);
+        assert_eq!(candidates.total_pages(), 2);
+        assert_eq!(candidates.page_candidates().len(), 1);
     }
 
     #[test]
