@@ -166,9 +166,24 @@ impl CandidateList {
     /// The cursor is an absolute index, so growing the page leaves it on the
     /// same candidate — only which page it falls on changes.
     pub fn expand_if_cursor_past_page(&mut self) {
-        if self.page_size < Self::DEFAULT_PAGE_SIZE && self.cursor >= self.page_size {
-            self.page_size = Self::DEFAULT_PAGE_SIZE;
+        if !self.is_expanded() && self.cursor >= self.page_size {
+            self.expand_page();
         }
+    }
+
+    /// Whether the page has already been grown to the full size. Segment
+    /// navigation asks this to carry the height across a rebuilt list: once
+    /// the cursor is back on the first candidate, nothing else records that
+    /// the window had been expanded.
+    pub fn is_expanded(&self) -> bool {
+        self.page_size >= Self::DEFAULT_PAGE_SIZE
+    }
+
+    /// Grow the page to the full size whatever the cursor is on, for
+    /// restoring a height that was decided elsewhere. Callers deciding it
+    /// from the cursor use [`expand_if_cursor_past_page`](Self::expand_if_cursor_past_page).
+    pub fn expand_page(&mut self) {
+        self.page_size = Self::DEFAULT_PAGE_SIZE;
     }
 
     /// Create a candidate list from strings (test fixture).

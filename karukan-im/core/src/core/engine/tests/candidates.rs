@@ -422,3 +422,43 @@ fn restoring_a_selection_keeps_the_window_expanded() {
         "a restored selection past the first page must keep the window expanded"
     );
 }
+
+#[test]
+fn segment_roundtrip_keeps_the_window_expanded_from_the_first_candidate() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    // Same setup as above, but walk back to the first candidate before
+    // leaving the segment: the cursor no longer says the window was
+    // expanded, so the segment has to remember it.
+    for ch in ['a', 'i', 'u', 'e', 'o'] {
+        engine.process_key(&press(ch));
+    }
+    for _ in 0..3 {
+        engine.process_key(&press_key(Keysym::LEFT));
+    }
+    for _ in 0..4 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    for _ in 0..3 {
+        engine.process_key(&press_key(Keysym::UP));
+    }
+    let list = conversion_list(&engine);
+    assert_eq!(list.cursor(), 0);
+    assert_eq!(list.page_size(), CandidateList::DEFAULT_PAGE_SIZE);
+    let selected = list.selected_text().expect("selection").to_string();
+
+    engine.process_key(&press_key(Keysym::RIGHT));
+    engine.process_key(&press_key(Keysym::LEFT));
+
+    let list = conversion_list(&engine);
+    assert_eq!(
+        list.selected_text(),
+        Some(selected.as_str()),
+        "test setup: the segment must restore its previous selection"
+    );
+    assert_eq!(
+        list.page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE,
+        "the window must stay expanded across the segment round trip"
+    );
+}
