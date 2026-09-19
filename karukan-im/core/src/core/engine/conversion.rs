@@ -326,13 +326,14 @@ impl InputMethodEngine {
     }
 
     /// Map builder output to the public [`CandidateList`] shown in the
-    /// conversion window, settled at the configured width.
+    /// conversion window, settled at the configured width and collapsed to
+    /// the `num_suggestions` rows the window opens with.
     fn to_conversion_candidate_list(
         &self,
         candidates: Vec<AnnotatedCandidate>,
         reading: &str,
     ) -> CandidateList {
-        self.settle_candidates(
+        self.collapsed_candidate_list(
             candidates
                 .into_iter()
                 .map(|ac| ac.into_candidate(reading))
@@ -1326,6 +1327,14 @@ impl InputMethodEngine {
                 return EngineResult::consumed();
             }
             op(candidates);
+            // A collapsed list starts at `num_suggestions` rows; the moment
+            // the cursor leaves that first page the user has asked for more
+            // than the window shows, so grow it to the full page and keep it
+            // there for the rest of this conversion. Shrinking back on the
+            // way up would make the window breathe as the cursor moves.
+            if candidates.is_collapsed() && candidates.cursor() >= candidates.page_size() {
+                candidates.expand_page();
+            }
             let text = candidates.selected_text().unwrap_or("").to_string();
             (text, candidates.clone())
         };

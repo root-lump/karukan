@@ -595,9 +595,32 @@ impl InputMethodEngine {
     /// rewriter's `１` come out `１`) and only the first survives — dropped
     /// here rather than at display time, since this list is also what
     /// Ctrl+digit indexes and commit reads.
+    ///
+    /// The page size is left at the default here, and deliberately not made
+    /// to follow `num_suggestions`: the composing suggestion window goes
+    /// through this too, and a smaller page would split that list into pages,
+    /// putting a page indicator on screen at every keystroke. Only the
+    /// conversion window starts collapsed, via
+    /// [`collapsed_candidate_list`](Self::collapsed_candidate_list).
     fn settle_candidates(&self, candidates: Vec<Candidate>) -> CandidateList {
+        CandidateList::new(self.settled_candidates(candidates))
+    }
+
+    /// Same list as [`settle_candidates`](Self::settle_candidates), but
+    /// showing only `num_suggestions` candidates at a time — what the
+    /// conversion window opens with until the user asks for more.
+    fn collapsed_candidate_list(&self, candidates: Vec<Candidate>) -> CandidateList {
+        CandidateList::with_page_size(
+            self.settled_candidates(candidates),
+            self.config.num_suggestions.max(1),
+        )
+    }
+
+    /// Settle the model's answers and drop duplicates; see
+    /// [`settle_candidates`](Self::settle_candidates).
+    fn settled_candidates(&self, candidates: Vec<Candidate>) -> Vec<Candidate> {
         let mut seen = HashSet::new();
-        let settled = candidates
+        candidates
             .into_iter()
             .filter_map(|mut candidate| {
                 if candidate.source == Some(CandidateSource::Model) {
@@ -605,8 +628,7 @@ impl InputMethodEngine {
                 }
                 seen.insert(candidate.text.clone()).then_some(candidate)
             })
-            .collect();
-        CandidateList::new(settled)
+            .collect()
     }
 
     /// Process a key event

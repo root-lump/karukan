@@ -139,6 +139,32 @@ impl CandidateList {
         }
     }
 
+    /// Create a candidate list that shows only `page_size` candidates at a
+    /// time. `0` is clamped to 1 — a zero page size would make every page
+    /// empty and `total_pages` meaningless.
+    pub fn with_page_size(candidates: Vec<Candidate>, page_size: usize) -> Self {
+        Self {
+            candidates,
+            cursor: 0,
+            page_size: page_size.max(1),
+        }
+    }
+
+    /// Whether the list is showing fewer candidates per page than the full
+    /// page. Doubles as "has this list been expanded yet?": nothing else
+    /// tracks that, because a narrowed source view builds a fresh list and
+    /// so starts collapsed again without anything having to reset a flag.
+    pub fn is_collapsed(&self) -> bool {
+        self.page_size < Self::DEFAULT_PAGE_SIZE
+    }
+
+    /// Grow the page to the full size, keeping the cursor on the same
+    /// candidate. The cursor is an absolute index, so nothing needs
+    /// adjusting — only which page it falls on changes.
+    pub fn expand_page(&mut self) {
+        self.page_size = Self::DEFAULT_PAGE_SIZE;
+    }
+
     /// Create a candidate list from strings (test fixture).
     #[cfg(test)]
     pub fn from_strings(strings: impl IntoIterator<Item = impl Into<String>>) -> Self {
@@ -374,6 +400,15 @@ mod tests {
         // Wrap to first page
         candidates.next_page();
         assert_eq!(candidates.current_page(), 0);
+    }
+
+    #[test]
+    fn test_candidate_list_zero_page_size_clamped() {
+        let candidates =
+            CandidateList::with_page_size(vec![Candidate::new("a"), Candidate::new("b")], 0);
+        assert_eq!(candidates.page_size(), 1);
+        assert_eq!(candidates.total_pages(), 2);
+        assert_eq!(candidates.page_candidates().len(), 1);
     }
 
     #[test]

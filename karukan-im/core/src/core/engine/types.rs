@@ -71,7 +71,9 @@ pub(in crate::core) struct SurroundingContext {
 pub struct EngineConfig {
     /// Number of conversion candidates for explicit conversion (Space key)
     pub num_candidates: usize,
-    /// Number of candidates to show in the composing suggestion window
+    /// Number of candidates the candidate window shows to begin with —
+    /// the composing suggestion list, and the conversion list until the
+    /// cursor leaves that first page (it then grows to a full page)
     pub num_suggestions: usize,
     /// Maximum context length to display
     pub display_context_chars: usize,

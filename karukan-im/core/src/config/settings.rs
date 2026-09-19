@@ -125,7 +125,9 @@ pub struct ConversionSettings {
     pub swap_space_tab: bool,
     /// Number of candidates to show on Space conversion
     pub num_candidates: usize,
-    /// Number of candidates to show in the composing suggestion window
+    /// Number of candidates the candidate window shows to begin with —
+    /// the composing suggestion list, and the conversion list until the
+    /// cursor leaves that first page (it then grows to a full page)
     pub num_suggestions: usize,
     /// Use surrounding text (text left of cursor) as context for conversion
     pub use_context: bool,

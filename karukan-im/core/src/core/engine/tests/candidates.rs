@@ -170,9 +170,9 @@ fn composing_suggestions_zero_clamped_to_one() {
 
 #[test]
 fn conversion_candidates_ignore_num_suggestions() {
-    // Space's conversion candidate list is a separate path from the
-    // composing suggestion window, so a small num_suggestions must not
-    // shrink it.
+    // num_suggestions bounds how many rows the conversion window shows at
+    // once, not how many candidates it holds: the ones past the first page
+    // must still be in the list, a keypress away.
     let mut engine = InputMethodEngine::with_config(EngineConfig {
         num_suggestions: 1,
         ..EngineConfig::default()
@@ -222,4 +222,148 @@ fn test_empty_live_text_not_added_to_candidates() {
             "Empty candidate should not be in the list"
         );
     }
+}
+
+// --- conversion window height (collapsed until the 4th candidate) tests ---
+
+/// Engine whose conversion list is longer than `num_suggestions`: the dict
+/// fixture's four surfaces plus the kana fallbacks.
+fn engine_with_collapsed_conversion(num_suggestions: usize) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        num_suggestions,
+        ..EngineConfig::default()
+    });
+    engine.dicts.system = Some(dict_with_many_candidates());
+    engine
+}
+
+/// The candidate list the conversion window is showing.
+fn conversion_list(engine: &InputMethodEngine) -> &CandidateList {
+    engine.state().candidates().expect("conversion candidates")
+}
+
+#[test]
+fn conversion_window_opens_at_num_suggestions() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let list = conversion_list(&engine);
+    assert!(
+        list.len() > 3,
+        "fixture must have more candidates than num_suggestions, got {}",
+        list.len()
+    );
+    assert_eq!(
+        list.page_candidates().len(),
+        3,
+        "the conversion window must open at num_suggestions rows"
+    );
+}
+
+#[test]
+fn conversion_window_expands_on_fourth_candidate() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    // Space opens the conversion on the 1st candidate; two more walk to the
+    // 3rd, the last one the first page shows.
+    engine.process_key(&press_key(Keysym::SPACE));
+    engine.process_key(&press_key(Keysym::SPACE));
+    engine.process_key(&press_key(Keysym::SPACE));
+    let list = conversion_list(&engine);
+    assert_eq!(list.cursor(), 2);
+    assert_eq!(
+        list.page_candidates().len(),
+        3,
+        "still inside the first page, so the window must not have grown"
+    );
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let list = conversion_list(&engine);
+    assert_eq!(list.cursor(), 3, "the 4th candidate must be selected");
+    assert_eq!(list.page_size(), CandidateList::DEFAULT_PAGE_SIZE);
+    assert_eq!(
+        list.page_candidates().len(),
+        CandidateList::DEFAULT_PAGE_SIZE.min(list.len()),
+        "a full page must be shown once expanded"
+    );
+}
+
+#[test]
+fn expanded_conversion_window_stays_expanded() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    for _ in 0..4 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE
+    );
+
+    // Back to the top: the window must not shrink again.
+    for _ in 0..3 {
+        engine.process_key(&press_key(Keysym::UP));
+    }
+    let list = conversion_list(&engine);
+    assert_eq!(list.cursor(), 0);
+    assert_eq!(
+        list.page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE,
+        "the window must stay expanded for the rest of the conversion"
+    );
+}
+
+#[test]
+fn filtered_view_starts_collapsed_again() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    for _ in 0..4 {
+        engine.process_key(&press_key(Keysym::SPACE));
+    }
+    assert_eq!(
+        conversion_list(&engine).page_size(),
+        CandidateList::DEFAULT_PAGE_SIZE
+    );
+
+    // Ctrl+T twice: learning (empty), then the 📚 view with the fixture's
+    // four surfaces.
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    let list = conversion_list(&engine);
+    assert_eq!(
+        list.len(),
+        4,
+        "the 📚 view must hold the fixture's surfaces"
+    );
+    assert_eq!(
+        list.page_candidates().len(),
+        3,
+        "a narrowed view is a fresh list, so it starts collapsed again"
+    );
+}
+
+#[test]
+fn composing_suggestions_are_never_paginated() {
+    let mut engine = engine_with_collapsed_conversion(3);
+
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press('i'));
+
+    let texts = show_candidates_texts(&result);
+    assert_eq!(texts.len(), 3);
+    assert_eq!(
+        engine.shown_suggestions.total_pages(),
+        1,
+        "the composing list is trimmed, not paginated — a page indicator \
+         here would show up at every keystroke"
+    );
 }
