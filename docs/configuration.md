@@ -11,6 +11,7 @@ chunk_digits = 0                # Chunk に残せる数字の桁数（0 = 数字
 chunk_alphabets = 0             # Chunk に残せる英字の数（0 = 英字はAI変換にかけない）
 strategy = "adaptive"           # 変換ストラテジー（adaptive / light / main）
 num_candidates = 9              # 変換候補数（Space押下時）
+num_suggestions = 3             # 入力中の候補ウィンドウに表示する予測候補数（9以上で1ページ分まで表示）
 n_threads = 4                   # 推論スレッド数（0 = 全コア使用）
 model = "jinen-v2-small-q5"     # メインモデル（モデルID or GGUFパス）
 light_model = "jinen-v2-xsmall-q5"  # 軽量モデル（ビームサーチ・長文用）

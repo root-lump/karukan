@@ -304,6 +304,17 @@ impl CandidateList {
     pub fn set_cursor(&mut self, cursor: usize) {
         self.cursor = cursor.min(self.candidates.len().saturating_sub(1));
     }
+
+    /// Keep only the first `limit` candidates, clamping the cursor into range.
+    pub fn truncate(&mut self, limit: usize) {
+        if self.candidates.len() <= limit {
+            return;
+        }
+        self.candidates.truncate(limit);
+        if self.cursor >= limit {
+            self.cursor = limit.saturating_sub(1);
+        }
+    }
 }
 
 impl Default for CandidateList {

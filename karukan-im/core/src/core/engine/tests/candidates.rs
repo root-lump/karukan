@@ -1,3 +1,5 @@
+use karukan_engine::Dictionary;
+
 use super::*;
 
 // --- Candidate preservation tests ---
@@ -73,6 +75,130 @@ fn test_suggest_result_preserved_in_start_conversion() {
         candidates.candidates().iter().any(|c| c.text == "愛"),
         "Previous suggest result '愛' should be preserved in candidates"
     );
+}
+
+// --- num_suggestions (composing suggestion window size) tests ---
+
+/// Dict fixture with several exact-match candidates for a single reading,
+/// so the composing suggestion list has more entries than a small
+/// `num_suggestions` can hold.
+fn dict_with_many_candidates() -> Dictionary {
+    dict_from_json(
+        r#"[{"reading":"あい","candidates":[
+            {"surface":"愛","score":1000.0},
+            {"surface":"藍","score":900.0},
+            {"surface":"哀","score":800.0},
+            {"surface":"合","score":700.0}
+        ]}]"#,
+    )
+}
+
+/// Texts from the most recent `ShowCandidates` action in `result`.
+fn show_candidates_texts(result: &EngineResult) -> Vec<String> {
+    result
+        .actions
+        .iter()
+        .find_map(|a| match a {
+            EngineAction::ShowCandidates(list) => {
+                Some(list.candidates().iter().map(|c| c.text.clone()).collect())
+            }
+            _ => None,
+        })
+        .expect("ShowCandidates action")
+}
+
+#[test]
+fn composing_suggestions_truncated_to_num_suggestions() {
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        num_suggestions: 2,
+        ..EngineConfig::default()
+    });
+    engine.dicts.system = Some(dict_with_many_candidates());
+
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press('i'));
+
+    let texts = show_candidates_texts(&result);
+    assert_eq!(
+        texts.len(),
+        2,
+        "num_suggestions=2 must cap the composing list at 2, got {texts:?}"
+    );
+    // The stored list (what Ctrl+digit indexes) must match the display,
+    // not just the rendered `ShowCandidates` action.
+    assert_eq!(engine.shown_suggestions.len(), 2);
+}
+
+#[test]
+fn composing_suggestions_not_truncated_below_num_suggestions() {
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        num_suggestions: 10,
+        ..EngineConfig::default()
+    });
+    engine.dicts.system = Some(dict_with_many_candidates());
+
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press('i'));
+
+    let texts = show_candidates_texts(&result);
+    for surface in ["愛", "藍", "哀", "合"] {
+        assert!(
+            texts.iter().any(|t| t == surface),
+            "num_suggestions=10 must not drop `{surface}`, got {texts:?}"
+        );
+    }
+}
+
+#[test]
+fn composing_suggestions_zero_clamped_to_one() {
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        num_suggestions: 0,
+        ..EngineConfig::default()
+    });
+    engine.dicts.system = Some(dict_with_many_candidates());
+
+    engine.process_key(&press('a'));
+    let result = engine.process_key(&press('i'));
+
+    let texts = show_candidates_texts(&result);
+    assert_eq!(
+        texts.len(),
+        1,
+        "num_suggestions=0 must clamp to 1, got {texts:?}"
+    );
+}
+
+#[test]
+fn conversion_candidates_ignore_num_suggestions() {
+    // Space's conversion candidate list is a separate path from the
+    // composing suggestion window, so a small num_suggestions must not
+    // shrink it.
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        num_suggestions: 1,
+        ..EngineConfig::default()
+    });
+    engine.dicts.system = Some(dict_with_many_candidates());
+
+    engine.process_key(&press('a'));
+    engine.process_key(&press('i'));
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let candidates = engine.state().candidates().expect("conversion candidates");
+    let texts: Vec<&str> = candidates
+        .candidates()
+        .iter()
+        .map(|c| c.text.as_str())
+        .collect();
+    assert!(
+        texts.len() > 1,
+        "num_suggestions must not affect the Space conversion list, got {texts:?}"
+    );
+    for surface in ["愛", "藍", "哀", "合"] {
+        assert!(
+            texts.contains(&surface),
+            "missing `{surface}`, got {texts:?}"
+        );
+    }
 }
 
 #[test]

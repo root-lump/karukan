@@ -104,8 +104,15 @@ impl InputMethodEngine {
 
     /// Show `candidates` in the composing suggestion window, remembering the
     /// list so Ctrl+digit can select from exactly what is on screen.
+    ///
+    /// Trimmed to `num_suggestions` *after* the dedup in `settle_candidates`:
+    /// trimming first would let duplicates eat the budget. The stored list is
+    /// trimmed too, not just the display — it is what Ctrl+digit indexes.
     fn show_suggestions(&mut self, candidates: Vec<Candidate>) -> EngineAction {
-        self.shown_suggestions = self.settle_candidates(candidates);
+        let limit = self.config.num_suggestions.max(1);
+        let mut settled = self.settle_candidates(candidates);
+        settled.truncate(limit);
+        self.shown_suggestions = settled;
         EngineAction::ShowCandidates(self.shown_suggestions.clone())
     }
 
