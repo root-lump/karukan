@@ -36,7 +36,12 @@ jobs:
     outputs:
       relevant: ${{ steps.filter.outputs.relevant }}
     steps:
+      # Pull requests only: on other events paths-filter diffs through the
+      # local git repository, which this job never checks out. The remaining
+      # jobs ignore `relevant` outside pull requests anyway, so skipping the
+      # step leaves the output empty and lets them run.
       - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
         id: filter
         with:
           filters: |
