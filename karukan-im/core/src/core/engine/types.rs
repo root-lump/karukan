@@ -5,7 +5,7 @@ use karukan_engine::{
     SymbolStyle, WidthRules,
 };
 
-use crate::config::settings::{PredictionMode, SpaceStyle, StrategyMode};
+use crate::config::settings::{CandidateWindow, PredictionMode, SpaceStyle, StrategyMode};
 
 use super::super::candidate::CandidateList;
 use super::super::preedit::Preedit;
@@ -120,6 +120,8 @@ pub struct EngineConfig {
     /// (behavior depends on whether the machine happens to have a cached
     /// model). An explicit `load_converters` call is unaffected.
     pub lazy_model_init: bool,
+    /// When the candidate window (aux line included) opens
+    pub candidate_window: CandidateWindow,
     /// Which symbol the `,` `.` `/` `[` `]` keys type
     pub symbol: SymbolStyle,
     /// The width kana input comes out at, per character group
@@ -158,6 +160,7 @@ impl EngineConfig {
             // Built from real user settings — always allow lazy model init,
             // even when karukan-im itself is compiled in test configuration.
             lazy_model_init: true,
+            candidate_window: settings.display.candidate_window,
             symbol: settings.symbol.style(),
             width: settings.width,
             space: settings.symbol.space,
@@ -186,6 +189,7 @@ impl Default for EngineConfig {
             prediction: PredictionMode::default(),
             swap_space_tab: false,
             lazy_model_init: !cfg!(test),
+            candidate_window: CandidateWindow::default(),
             symbol: SymbolStyle::default(),
             width: WidthRules::default(),
             space: SpaceStyle::default(),

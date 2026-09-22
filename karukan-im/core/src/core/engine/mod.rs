@@ -38,7 +38,7 @@ use super::candidate::{Candidate, CandidateList, CandidateSource};
 use super::keycode::{KeyEvent, Keysym};
 use super::preedit::{Preedit, PreeditSegment};
 use super::state::InputState;
-use crate::config::settings::{Settings, SpaceStyle};
+use crate::config::settings::{CandidateWindow, Settings, SpaceStyle};
 use form::ConversionForm;
 
 /// A conversion candidate tagged with its source and an optional description.
@@ -88,25 +88,6 @@ impl AnnotatedCandidate {
             source: Some(self.source),
             description: self.description,
         }
-    }
-}
-
-/// Resolve a model variant id from settings.
-///
-/// - `model` is None or empty → default variant from registry
-/// - `model` matches a known variant id → that variant
-/// - otherwise → error (unknown variant)
-pub fn resolve_variant_id(model: Option<&str>) -> anyhow::Result<String> {
-    let reg = karukan_engine::kanji::registry();
-    match model {
-        Some(id) if !id.is_empty() => {
-            if reg.find_variant(id).is_some() {
-                Ok(id.to_string())
-            } else {
-                anyhow::bail!("unknown model variant: {}", id)
-            }
-        }
-        _ => Ok(reg.default_model.clone()),
     }
 }
 
@@ -658,6 +639,14 @@ impl InputMethodEngine {
             self.conversion_expanded = false;
         }
 
+        let result = self.dispatch_key(key);
+        self.hide_candidate_window(result)
+    }
+
+    /// Every key, the state-independent shortcuts included. `process_key`
+    /// applies the candidate-window policy to whatever this returns, so no
+    /// path can reopen a window the setting keeps closed.
+    fn dispatch_key(&mut self, key: &KeyEvent) -> EngineResult {
         // Install converters the background loader has finished; never blocks.
         self.poll_loaded_models();
 
@@ -733,16 +722,39 @@ impl InputMethodEngine {
         // conversion_ms reports this key only: 0 unless a conversion runs below
         self.metrics.conversion_ms = 0;
 
-        let shift_active = key.modifiers.shift_key;
-
         let result = match &self.state {
-            InputState::Empty => self.process_key_empty(key, shift_active),
-            InputState::Composing { .. } => self.process_key_composing(key, shift_active),
-            InputState::Conversion { .. } => self.process_key_conversion(key, shift_active),
+            InputState::Empty => self.process_key_empty(key),
+            InputState::Composing { .. } => self.process_key_composing(key),
+            InputState::Conversion { .. } => self.process_key_conversion(key),
         };
 
         self.metrics.process_key_ms = start.elapsed().as_millis() as u64;
 
+        result
+    }
+
+    /// `[display] candidate_window = "conversion"`: no window while
+    /// typing, so the first one is what Space opens. Done on the finished
+    /// result because composing renders come from many paths, the
+    /// state-independent shortcuts among them. The aux
+    /// line lives in that window, so it goes too, and `shown_suggestions`
+    /// is emptied so Ctrl+digit cannot pick what is off screen. The emoji
+    /// picker stays: it is the whole mode.
+    fn hide_candidate_window(&mut self, mut result: EngineResult) -> EngineResult {
+        if self.config.candidate_window == CandidateWindow::Always
+            || !matches!(self.state, InputState::Composing { .. })
+            || self.mode.current() == InputMode::Emoji
+        {
+            return result;
+        }
+        self.shown_suggestions = CandidateList::default();
+        for action in &mut result.actions {
+            match action {
+                EngineAction::ShowCandidates(_) => *action = EngineAction::HideCandidates,
+                EngineAction::UpdateAuxText(_) => *action = EngineAction::HideAuxText,
+                _ => {}
+            }
+        }
         result
     }
 
