@@ -820,11 +820,7 @@ impl InputMethodEngine {
         self.live.enabled
     }
 
-    pub(super) fn process_key_conversion(
-        &mut self,
-        key: &KeyEvent,
-        shift_active: bool,
-    ) -> EngineResult {
+    pub(super) fn process_key_conversion(&mut self, key: &KeyEvent) -> EngineResult {
         // Alt chords pass through before any binding matches: Alt+Tab must
         // navigate and Alt+Return must not commit.
         if key.modifiers.alt_key {
@@ -833,10 +829,10 @@ impl InputMethodEngine {
         match key.keysym {
             Keysym::RETURN => self.commit_conversion(),
             Keysym::ESCAPE => self.cancel_conversion(),
-            // Tab stays next-candidate and Shift+Tab (ISO_Left_Tab on
-            // X11) prev-candidate for mozc-compatible muscle memory.
+            // Shift+Tab (ISO_Left_Tab on X11) and Shift+Space step back the
+            // way Tab and Space step forward: mozc-compatible muscle memory.
             Keysym::ISO_LEFT_TAB => self.prev_candidate(),
-            Keysym::TAB if key.modifiers.shift_key => self.prev_candidate(),
+            Keysym::TAB | Keysym::SPACE if key.modifiers.shift_key => self.prev_candidate(),
             Keysym::SPACE | Keysym::DOWN | Keysym::TAB => self.next_candidate(),
             Keysym::UP => self.prev_candidate(),
             Keysym::PAGE_DOWN => self.next_candidate_page(),
@@ -856,7 +852,7 @@ impl InputMethodEngine {
             // re-expands as the query shrinks. Without a filter it returns
             // to the composition as before.
             Keysym::BACKSPACE if self.state.filter().is_some() => {
-                self.refine_through_composing(key, shift_active)
+                self.refine_through_composing(key)
             }
             // Backspace cancels back to the composition, like Escape.
             Keysym::BACKSPACE => self.cancel_conversion(),
@@ -870,7 +866,7 @@ impl InputMethodEngine {
             Keysym::RIGHT => self.advance_to_next_segment(),
             Keysym::LEFT => self.return_to_prev_segment(),
             Keysym::HOME | Keysym::END => {
-                self.in_composing(false, |e| e.process_key_composing(key, shift_active))
+                self.in_composing(false, |e| e.process_key_composing(key))
             }
             _ => {
                 // Ctrl+N / Ctrl+P: emacs-style candidate navigation
@@ -903,9 +899,7 @@ impl InputMethodEngine {
                         | Keysym::KEY_E_UPPER
                         | Keysym::KEY_F
                         | Keysym::KEY_F_UPPER => {
-                            return self.in_composing(false, |e| {
-                                e.process_key_composing(key, shift_active)
-                            });
+                            return self.in_composing(false, |e| e.process_key_composing(key));
                         }
                         _ => {}
                     }
@@ -939,9 +933,9 @@ impl InputMethodEngine {
                 // next input (manual conversion) — see `typing_refines`.
                 if key.to_char().is_some() && !key.modifiers.control_key {
                     return if self.typing_refines() {
-                        self.refine_through_composing(key, shift_active)
+                        self.refine_through_composing(key)
                     } else {
-                        self.commit_conversion_and_continue(key, shift_active)
+                        self.commit_conversion_and_continue(key)
                     };
                 }
 
@@ -957,11 +951,10 @@ impl InputMethodEngine {
     /// composing path, then re-enter the conversion with the previous
     /// source filter if one was active. With a filter the composing render
     /// is discarded, so its auto-suggest inference is suppressed.
-    fn refine_through_composing(&mut self, key: &KeyEvent, shift_active: bool) -> EngineResult {
+    fn refine_through_composing(&mut self, key: &KeyEvent) -> EngineResult {
         let filter = self.state.filter();
-        let result = self.in_composing(filter.is_some(), |engine| {
-            engine.process_key_composing(key, shift_active)
-        });
+        let result =
+            self.in_composing(filter.is_some(), |engine| engine.process_key_composing(key));
         if let Some(source) = filter
             && matches!(self.state, InputState::Composing { .. })
         {
@@ -983,11 +976,7 @@ impl InputMethodEngine {
     /// `suppress_suggest` covers the commit so the tail path's intermediate
     /// auto-suggest is not inferred twice — the keystroke below renders the
     /// state the user actually ends up in.
-    fn commit_conversion_and_continue(
-        &mut self,
-        key: &KeyEvent,
-        shift_active: bool,
-    ) -> EngineResult {
+    fn commit_conversion_and_continue(&mut self, key: &KeyEvent) -> EngineResult {
         self.suppress_suggest = true;
         let mut result = self.commit_conversion();
         self.suppress_suggest = false;
@@ -996,8 +985,8 @@ impl InputMethodEngine {
         // alone rather than feeding the key into a state that never changed.
         let follow = match self.state {
             InputState::Conversion { .. } => return result,
-            InputState::Empty => self.process_key_empty(key, shift_active),
-            InputState::Composing { .. } => self.process_key_composing(key, shift_active),
+            InputState::Empty => self.process_key_empty(key),
+            InputState::Composing { .. } => self.process_key_composing(key),
         };
 
         result.actions.extend(follow.actions);

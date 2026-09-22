@@ -125,7 +125,7 @@ pub struct KarukanEngine {
 
 impl KarukanEngine {
     fn new() -> Self {
-        let settings = Settings::load().unwrap_or_default();
+        let settings = Settings::load_or_default();
         let config = EngineConfig::from_settings(&settings);
         Self::with_settings_and_config(settings, config)
     }
