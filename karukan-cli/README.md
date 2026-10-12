@@ -47,6 +47,8 @@ cargo run --release --bin karukan-dict -- build input.txt --format json -o dict.
 - `json`: `[{reading, candidates: [{surface, score}]}]` の配列
 - `mozc`: Mozc/Google IME TSV（`reading\tword\tPOS\tcomment`）
 
+読みのかな表記は全角ひらがなに揃えます（カタカナ・半角カタカナ・分離した濁点に対応）。JSON で同じ読みになる項目が複数ある場合は候補を統合し、同じ表記の候補が重複するときは最小スコアを採用します。単語の表記は正規化せず、旧字体・異体字を保持します。
+
 ### view — 辞書ビューア
 
 辞書の内容を検索・閲覧します。CLIモードとWebモードの2つの動作モードがあります。

@@ -81,10 +81,15 @@ impl Dictionary {
     /// Entries must already be sorted by `reading` bytes and deduplicated.
     /// This is the shared final step for all dictionary builders; it also
     /// sorts each entry's candidates by score ascending, the invariant
-    /// every lookup relies on (`load` enforces the same on read).
+    /// every lookup relies on (`load` enforces the same on read), and
+    /// keeps the lowest score for duplicate surfaces.
     fn build_from_entries(mut entries: Vec<DictEntry>) -> Result<Self> {
         for entry in &mut entries {
             entry.candidates.sort_by(|a, b| a.score.total_cmp(&b.score));
+            if entry.candidates.len() > 1 {
+                let mut seen = HashSet::new();
+                entry.candidates.retain(|c| seen.insert(c.surface.clone()));
+            }
         }
         let keyset: Vec<(&[u8], u32)> = entries
             .iter()
@@ -105,7 +110,8 @@ impl Dictionary {
     /// Build a Dictionary from a JSON file.
     ///
     /// The JSON format is an array of `{reading, candidates: [{surface, score}]}`.
-    /// Readings are converted from katakana to hiragana.
+    /// Kana readings are normalized to full-width hiragana. Entries with
+    /// the same normalized reading are combined without losing candidates.
     pub fn build_from_json(path: impl AsRef<Path>) -> Result<Self> {
         let file = File::open(path.as_ref())?;
         let reader = BufReader::new(file);
@@ -115,7 +121,7 @@ impl Dictionary {
         let mut entries: Vec<DictEntry> = json_entries
             .into_iter()
             .map(|je| DictEntry {
-                reading: katakana_to_hiragana(&je.reading),
+                reading: normalize_reading(&je.reading),
                 candidates: je
                     .candidates
                     .into_iter()
@@ -130,8 +136,16 @@ impl Dictionary {
         // Sort by reading bytes for the trie builder
         entries.sort_by(|a, b| a.reading.as_bytes().cmp(b.reading.as_bytes()));
 
-        // Deduplicate entries with the same reading (keep the first occurrence)
-        entries.dedup_by(|b, a| a.reading == b.reading);
+        // Different rows (including katakana/hiragana aliases) can carry
+        // different spellings. Merge them before sorting/deduping surfaces.
+        entries.dedup_by(|b, a| {
+            if a.reading == b.reading {
+                a.candidates.append(&mut b.candidates);
+                true
+            } else {
+                false
+            }
+        });
 
         Self::build_from_entries(entries)
     }
@@ -425,7 +439,8 @@ impl Dictionary {
     ///
     /// The TSV format is `reading\tword\tPOS\tcomment` (tab-separated, 4 columns).
     /// Lines starting with `#` are comments, empty lines are skipped.
-    /// Readings are grouped and converted to `DictEntry` with score 0.0.
+    /// Kana readings are normalized to full-width hiragana, grouped and
+    /// converted to `DictEntry` with score 0.0. Surface spellings are kept.
     pub fn build_from_mozc_tsv(path: impl AsRef<Path>) -> Result<Self> {
         let file = File::open(path.as_ref())?;
         let reader = BufReader::new(file);
@@ -446,7 +461,7 @@ impl Dictionary {
                 continue;
             }
 
-            let reading = cols[0].to_string();
+            let reading = normalize_reading(cols[0]);
             let surface = cols[1].to_string();
 
             if reading.is_empty() || surface.is_empty() {
@@ -482,17 +497,6 @@ impl Dictionary {
 
         // Sort by reading bytes for the trie builder
         entries.sort_by(|a, b| a.reading.as_bytes().cmp(b.reading.as_bytes()));
-
-        // Deduplicate entries with the same reading (keep the first occurrence)
-        entries.dedup_by(|b, a| {
-            if a.reading == b.reading {
-                // Merge candidates from b into a
-                extend_candidates_unique(&mut a.candidates, std::mem::take(&mut b.candidates));
-                true
-            } else {
-                false
-            }
-        });
 
         Self::build_from_entries(entries)
     }
@@ -554,6 +558,27 @@ impl Dictionary {
 
         Self::build_from_entries(entries).map(Some)
     }
+}
+
+/// Match the hiragana produced by kana input, folding half-width kana and
+/// composing dakuten. Normalize only kana runs: literal alphabet, digit,
+/// symbol and kanji keys must retain their authored width/spelling.
+/// This runs at import time, never on candidate surfaces or binary loading.
+fn normalize_reading(reading: &str) -> String {
+    let mut normalized = String::with_capacity(reading.len());
+    let mut start = 0;
+    for (index, c) in reading.char_indices() {
+        if !matches!(c, '\u{3041}'..='\u{3096}' | '\u{3099}'..='\u{309E}'
+            | '\u{30A1}'..='\u{30FA}' | '\u{30FC}'..='\u{30FE}'
+            | '\u{FF66}'..='\u{FF9F}')
+        {
+            normalized.extend(reading[start..index].nfkc());
+            normalized.push(c);
+            start = index + c.len_utf8();
+        }
+    }
+    normalized.extend(reading[start..].nfkc());
+    katakana_to_hiragana(&normalized)
 }
 
 /// Append candidates to `dst`, skipping any whose surface is already present.
@@ -1045,6 +1070,112 @@ col0,col1,col2,4500,今日,col5,col6,col7,col8,col9,col10,キョウ
     }
 
     #[test]
+    fn test_json_preserves_candidates_from_duplicate_readings() {
+        let mut input = NamedTempFile::new().unwrap();
+        input
+            .write_all(
+                r#"[
+            {"reading":"タカ","candidates":[
+                {"surface":"高","score":30.0},
+                {"surface":"高","score":20.0}]},
+            {"reading":"たか","candidates":[
+                {"surface":"髙","score":40.0},
+                {"surface":"高","score":10.0}]},
+            {"reading":"たか","candidates":[
+                {"surface":"鷹","score":10.0}]}
+        ]"#
+                .as_bytes(),
+            )
+            .unwrap();
+        let dict = Dictionary::build_from_json(input.path()).unwrap();
+        let bin = NamedTempFile::new().unwrap();
+        dict.save(bin.path()).unwrap();
+        let loaded = Dictionary::load(bin.path()).unwrap();
+
+        for dictionary in [&dict, &loaded] {
+            assert_eq!(dictionary.entries.len(), 1);
+            let found = dictionary.exact_match_search("たか").unwrap();
+            let candidates: Vec<_> = found
+                .candidates
+                .iter()
+                .map(|c| (c.surface.as_str(), c.score))
+                .collect();
+            // Keep the cheapest duplicate and stable order for tied scores.
+            assert_eq!(candidates, [("高", 10.0), ("鷹", 10.0), ("髙", 40.0)]);
+            let predicted: Vec<_> = dictionary
+                .predictive_search("た", usize::MAX)
+                .into_iter()
+                .map(|m| m.candidate.surface.as_str())
+                .collect();
+            assert_eq!(predicted, ["高", "鷹", "髙"]);
+        }
+    }
+
+    #[test]
+    fn test_import_normalizes_kana_readings_without_changing_surfaces() {
+        // Full/half-width katakana and decomposed dakuten must all be
+        // reachable using the hiragana produced by ordinary romaji input.
+        // Surface spellings (including compatibility and non-BMP kanji)
+        // belong to the author and must survive verbatim.
+        let readings = ["ばら", "バラ", "ﾊﾞﾗ", "は\u{3099}ら", "ハ\u{3099}ラ"];
+        let surfaces = ["薔薇", "髙", "𠮷", "﨑", "ﾊﾞﾗ"];
+        let mut json = NamedTempFile::new().unwrap();
+        let entries: Vec<_> = readings.iter().zip(surfaces).map(|(reading, surface)| {
+            serde_json::json!({"reading": reading, "candidates": [{"surface": surface, "score": 0.0}]})
+        }).collect();
+        serde_json::to_writer(&mut json, &entries).unwrap();
+        let mut tsv = NamedTempFile::new().unwrap();
+        for (reading, surface) in readings.iter().zip(surfaces) {
+            writeln!(tsv, "{reading}\t{surface}\t名詞").unwrap();
+        }
+
+        for dict in [
+            Dictionary::build_from_json(json.path()).unwrap(),
+            Dictionary::load_auto(tsv.path()).unwrap(),
+        ] {
+            let bin = NamedTempFile::new().unwrap();
+            dict.save(bin.path()).unwrap();
+            let loaded = Dictionary::load_auto(bin.path()).unwrap();
+            for dictionary in [&dict, &loaded] {
+                assert_eq!(dictionary.entries.len(), 1);
+                let found = dictionary.exact_match_search("ばら").unwrap();
+                assert_eq!(
+                    found
+                        .candidates
+                        .iter()
+                        .map(|c| c.surface.as_str())
+                        .collect::<Vec<_>>(),
+                    surfaces
+                );
+                assert_eq!(
+                    dictionary.predictive_search("ば", usize::MAX).len(),
+                    surfaces.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_import_preserves_non_kana_reading_characters() {
+        // NFKC of the whole reading would break literal full-width keys.
+        let mut tsv = NamedTempFile::new().unwrap();
+        writeln!(tsv, "Ａﾊﾞ１！\t髙\t名詞").unwrap();
+        writeln!(tsv, "Ａば１！\t高\t名詞").unwrap();
+        writeln!(tsv, "Ａバ１！\t髙\t名詞").unwrap();
+        let dict = Dictionary::load_auto(tsv.path()).unwrap();
+        let found = dict.exact_match_search("Ａば１！").unwrap();
+        assert_eq!(
+            found
+                .candidates
+                .iter()
+                .map(|c| c.surface.as_str())
+                .collect::<Vec<_>>(),
+            ["髙", "高"]
+        );
+        assert!(dict.exact_match_search("Aば1!").is_none());
+    }
+
+    #[test]
     fn test_load_auto_binary() {
         let json_file = create_test_json();
         let dict = Dictionary::build_from_json(json_file.path()).unwrap();
@@ -1078,7 +1209,7 @@ col0,col1,col2,4500,今日,col5,col6,col7,col8,col9,col10,キョウ
         f1.flush().unwrap();
 
         let mut f2 = NamedTempFile::new().unwrap();
-        f2.write_all("きょう\t教\t名詞\t\nおおさか\t大阪\t名詞\t\n".as_bytes())
+        f2.write_all("キョウ\t教\t名詞\t\nｷｮｳ\t今日\t名詞\t\nおおさか\t大阪\t名詞\t\n".as_bytes())
             .unwrap();
         f2.flush().unwrap();
 
