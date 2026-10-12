@@ -202,6 +202,87 @@ fn conversion_candidates_ignore_num_suggestions() {
 }
 
 #[test]
+fn imported_rare_candidate_survives_ranking_pagination_and_commit() {
+    let mut engine = composing_with("たか");
+    engine.config.num_suggestions = 1;
+    engine.config.num_candidates = 1;
+    seed_model_cache(&mut engine, "タカ", "", &["高"]);
+    engine.dicts.system = Some(dict_from_json(
+        r#"[
+            {"reading":"タカ","candidates":[
+                {"surface":"高","score":1.0},
+                {"surface":"鷹","score":2.0},
+                {"surface":"多寡","score":3.0},
+                {"surface":"貴","score":4.0},
+                {"surface":"孝","score":5.0},
+                {"surface":"隆","score":6.0},
+                {"surface":"崇","score":7.0},
+                {"surface":"享","score":8.0},
+                {"surface":"敬","score":9.0},
+                {"surface":"昂","score":10.0}]},
+            {"reading":"たか","candidates":[
+                {"surface":"髙","score":99999.0}]}
+        ]"#,
+    ));
+
+    engine.process_key(&press_key(Keysym::SPACE));
+    let candidates = engine.state().candidates().unwrap().candidates();
+    assert!(candidates.iter().any(|c| c.text == "髙"));
+    assert_eq!(candidates.iter().filter(|c| c.text == "高").count(), 1);
+
+    // The dictionary view must independently preserve the rare spelling.
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    engine.process_key(&press_ctrl(Keysym::KEY_T));
+    assert_eq!(engine.state.filter(), Some(CandidateSource::Dictionary));
+    let list = engine.state().candidates().unwrap();
+    let index = list
+        .candidates()
+        .iter()
+        .position(|c| c.text == "髙")
+        .unwrap();
+    assert!(index >= CandidateList::DEFAULT_PAGE_SIZE);
+    for _ in 0..index {
+        engine.process_key(&press_key(Keysym::DOWN));
+    }
+    let list = engine.state().candidates().unwrap();
+    assert!(list.current_page() > 0);
+    assert_eq!(list.selected_text(), Some("髙"));
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Commit(text) if text == "髙"))
+    );
+}
+
+#[test]
+fn imported_katakana_user_reading_matches_romaji_input() {
+    use std::io::Write;
+    let mut input = tempfile::NamedTempFile::new().unwrap();
+    writeln!(input, "ﾊﾞﾗ\t薔薇\t名詞").unwrap();
+    let mut engine = InputMethodEngine::new();
+    engine.dicts.user = Some(Dictionary::load_auto(input.path()).unwrap());
+    for c in "bara".chars() {
+        engine.process_key(&press(c));
+    }
+    engine.process_key(&press_key(Keysym::SPACE));
+    let list = engine.state().candidates().unwrap();
+    assert_eq!(list.selected_text(), Some("薔薇"));
+    assert_eq!(
+        list.selected().unwrap().source,
+        Some(CandidateSource::UserDictionary)
+    );
+    let result = engine.process_key(&press_key(Keysym::RETURN));
+    assert!(
+        result
+            .actions
+            .iter()
+            .any(|a| matches!(a, EngineAction::Commit(text) if text == "薔薇"))
+    );
+}
+
+#[test]
 fn test_empty_live_text_not_added_to_candidates() {
     // When live_conversion_text is empty, no extra candidate should be added
     let mut engine = make_live_conversion_engine();
