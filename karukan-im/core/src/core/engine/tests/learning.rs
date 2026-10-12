@@ -27,16 +27,15 @@ fn conversion_texts(engine: &InputMethodEngine) -> Vec<String> {
 fn build_candidates_includes_exact_learning() {
     let mut engine = engine_with_learned("あい", "藍");
 
-    let texts: Vec<String> = engine
-        .build_conversion_candidates("あい", "あい", "", 9, LearningLookup::Exact)
-        .into_iter()
-        .map(|c| c.text)
-        .collect();
+    let candidates =
+        engine.build_conversion_candidates("あい", "あい", "", 9, LearningLookup::Exact);
 
     assert!(
-        texts.contains(&"藍".to_string()),
+        candidates
+            .iter()
+            .any(|c| c.text == "藍" && c.source == CandidateSource::Learning),
         "exact-match learned `藍` must appear on the Space path, got {:?}",
-        texts,
+        candidates,
     );
 }
 
@@ -44,17 +43,13 @@ fn build_candidates_includes_exact_learning() {
 fn build_candidates_excludes_predictions_when_not_predictive() {
     let mut engine = engine_with_learned("あいさつ", "挨拶");
 
-    let texts: Vec<String> = engine
-        .build_conversion_candidates("あい", "あい", "", 9, LearningLookup::Skip)
-        .into_iter()
-        .map(|c| c.text)
-        .collect();
-
-    assert!(
-        !texts.contains(&"挨拶".to_string()),
-        "Space path must not surface the prediction `挨拶` for `あい`, got {:?}",
-        texts,
-    );
+    for lookup in [LearningLookup::Exact, LearningLookup::Skip] {
+        let candidates = engine.build_conversion_candidates("あい", "あい", "", 9, lookup);
+        assert!(
+            candidates.iter().all(|c| c.text != "挨拶"),
+            "{lookup:?} must not surface the prediction `挨拶` for `あい`, got {candidates:?}",
+        );
+    }
 }
 
 #[test]
@@ -650,12 +645,19 @@ fn merged_tab_skips_learning() {
     engine.process_key(&press('i'));
     engine.process_key(&press_key(Keysym::TAB));
 
-    let texts = conversion_texts(&engine);
+    let candidates = engine.candidates().unwrap().candidates();
     assert!(
-        !texts.contains(&"藍".to_string()),
-        "merged mode's Tab must skip learned candidates, got {:?}",
-        texts,
+        candidates
+            .iter()
+            .all(|c| c.source != Some(CandidateSource::Learning)),
+        "merged mode's Tab must skip learned candidates, got {candidates:?}",
     );
+    // Skipping history does not blacklist the same surface from the catalog.
+    let ai = candidates
+        .iter()
+        .find(|c| c.text == "藍")
+        .expect("catalog 藍");
+    assert_eq!(ai.source, Some(CandidateSource::Rewriter));
 }
 
 #[test]

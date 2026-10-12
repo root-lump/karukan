@@ -635,6 +635,10 @@ impl InputMethodEngine {
 
     /// Settle the model's answers and drop duplicates; see
     /// [`settle_candidates`](Self::settle_candidates).
+    ///
+    /// Attach single-kanji notes (`高の異体字`) regardless of the source.
+    /// Both normal and collapsed lists pass through here; source dedup may
+    /// have already dropped the rewriter row that originally carried the note.
     fn settled_candidates(&self, candidates: Vec<Candidate>) -> Vec<Candidate> {
         let mut seen = HashSet::new();
         candidates
@@ -642,6 +646,11 @@ impl InputMethodEngine {
             .filter_map(|mut candidate| {
                 if candidate.source == Some(CandidateSource::Model) {
                     candidate.text = self.settle_text(&candidate.text);
+                }
+                if candidate.description.is_none() {
+                    candidate.description =
+                        karukan_engine::single_kanji_description(&candidate.text)
+                            .map(str::to_string);
                 }
                 seen.insert(candidate.text.clone()).then_some(candidate)
             })
