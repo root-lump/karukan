@@ -144,23 +144,19 @@ pub enum StrategyMode {
     Main,
 }
 
-/// How predictive candidates (learning-cache prefix matches whose reading
-/// extends beyond what was typed, e.g. learned あいさつ→挨拶 offered for あい)
-/// are surfaced. See `default.toml` for the user-facing description.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// What a conversion key (or the composing suggestion window) offers. See
+/// `default.toml` for the user-facing description. No `Default`: the
+/// shipped roles live in `default.toml`, one per key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-pub enum PredictionMode {
-    /// Predictions surface on a dedicated conversion key; the primary
-    /// conversion converts exactly the typed reading.
-    #[default]
-    Separate,
-    /// Predictions are merged into the primary conversion candidates (the
-    /// prediction shown while typing carries into the conversion); the
-    /// dedicated key becomes a learning-free conversion instead.
-    Merged,
-    /// Predictions are disabled entirely, including the composing
-    /// suggestion window; the dedicated key is a learning-free conversion.
-    Off,
+pub enum ConversionRole {
+    /// Exact-reading learning candidates; no predictions.
+    Convert,
+    /// Learning and dictionary predictions (readings extending the typed
+    /// one) as well as the exact matches.
+    Predict,
+    /// No learning candidates at all; no predictions.
+    Plain,
 }
 
 /// Conversion-related settings
@@ -168,10 +164,12 @@ pub enum PredictionMode {
 pub struct ConversionSettings {
     /// Conversion strategy mode (adaptive, light, main)
     pub strategy: StrategyMode,
-    /// How predictive (prefix-match learning) candidates are surfaced
-    pub prediction: PredictionMode,
-    /// Swap the conversion roles of Space and Tab
-    pub swap_space_tab: bool,
+    /// What Space/Down converts with
+    pub space_role: ConversionRole,
+    /// What Tab converts with
+    pub tab_role: ConversionRole,
+    /// What the composing suggestion window offers
+    pub suggest_window_role: ConversionRole,
     /// Number of candidates to show on Space conversion
     pub num_candidates: usize,
     /// Number of candidates the candidate window shows to begin with —
@@ -283,6 +281,24 @@ fn parse_with_defaults(user_content: &str) -> Result<Settings> {
     Ok(base.try_into()?)
 }
 
+/// `[conversion]` keys that were replaced by the per-key roles. They are
+/// ignored (not translated) and only warned about.
+const DEPRECATED_CONVERSION_KEYS: [&str; 2] = ["prediction", "swap_space_tab"];
+
+/// The deprecated `[conversion]` keys present in the user's config.toml.
+fn deprecated_conversion_keys(user_content: &str) -> Vec<&'static str> {
+    let Ok(user) = toml::from_str::<toml::Value>(user_content) else {
+        return vec![];
+    };
+    let Some(conversion) = user.get("conversion").and_then(toml::Value::as_table) else {
+        return vec![];
+    };
+    DEPRECATED_CONVERSION_KEYS
+        .into_iter()
+        .filter(|key| conversion.contains_key(*key))
+        .collect()
+}
+
 /// Get the project directories for karukan-im.
 fn project_dirs() -> Option<ProjectDirs> {
     ProjectDirs::from("com", "karukan", "karukan-im")
@@ -363,6 +379,12 @@ impl Settings {
     pub fn load_from(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)?;
         let settings = parse_with_defaults(&content)?;
+        for key in deprecated_conversion_keys(&content) {
+            warn!(
+                "[conversion] {key} is no longer supported and is ignored; \
+                 use space_role / tab_role / suggest_window_role instead"
+            );
+        }
         // Surface broken model entries now, without failing the load: a key
         // that is never used must not cost the rest of the config.
         for key in settings.models.keys() {
@@ -740,12 +762,57 @@ num_candidates = 5
     }
 
     #[test]
-    fn test_prediction_defaults_and_parse() {
-        // Defaults: separate / no swap.
+    fn test_conversion_roles_defaults_and_parse() {
         let settings = Settings::default();
-        assert_eq!(settings.conversion.prediction, PredictionMode::Separate);
-        assert!(!settings.conversion.swap_space_tab);
+        assert_eq!(settings.conversion.space_role, ConversionRole::Convert);
+        assert_eq!(settings.conversion.tab_role, ConversionRole::Predict);
+        assert_eq!(
+            settings.conversion.suggest_window_role,
+            ConversionRole::Convert
+        );
 
+        for (value, role) in [
+            ("convert", ConversionRole::Convert),
+            ("predict", ConversionRole::Predict),
+            ("plain", ConversionRole::Plain),
+        ] {
+            for key in ["space_role", "tab_role", "suggest_window_role"] {
+                let settings =
+                    parse_with_defaults(&format!("[conversion]\n{key} = \"{value}\"\n")).unwrap();
+                let parsed = match key {
+                    "space_role" => settings.conversion.space_role,
+                    "tab_role" => settings.conversion.tab_role,
+                    _ => settings.conversion.suggest_window_role,
+                };
+                assert_eq!(parsed, role, "{key} = {value}");
+            }
+        }
+    }
+
+    #[test]
+    fn test_conversion_role_rejects_unknown_value() {
+        assert!(parse_with_defaults("[conversion]\nspace_role = \"foo\"\n").is_err());
+    }
+
+    #[test]
+    fn test_deprecated_conversion_keys() {
+        assert_eq!(
+            deprecated_conversion_keys(
+                "[conversion]\nprediction = \"merged\"\nswap_space_tab = true\n"
+            ),
+            vec!["prediction", "swap_space_tab"]
+        );
+        assert_eq!(
+            deprecated_conversion_keys("[conversion]\nswap_space_tab = true\n"),
+            vec!["swap_space_tab"]
+        );
+        assert!(deprecated_conversion_keys("[conversion]\nspace_role = \"plain\"\n").is_empty());
+        // Only `[conversion]` counts.
+        assert!(deprecated_conversion_keys("[display]\nprediction = \"off\"\n").is_empty());
+    }
+
+    #[test]
+    fn test_deprecated_conversion_keys_are_ignored_on_load() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(
             file,
@@ -757,8 +824,8 @@ swap_space_tab = true
         )
         .unwrap();
         let settings = Settings::load_from(file.path()).unwrap();
-        assert_eq!(settings.conversion.prediction, PredictionMode::Merged);
-        assert!(settings.conversion.swap_space_tab);
+        assert_eq!(settings.conversion.space_role, ConversionRole::Convert);
+        assert_eq!(settings.conversion.tab_role, ConversionRole::Predict);
     }
 
     #[test]

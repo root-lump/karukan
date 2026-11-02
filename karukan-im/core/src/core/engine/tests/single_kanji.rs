@@ -2,7 +2,7 @@
 //! rewriter variants. No kanji model is loaded.
 
 use super::*;
-use crate::config::settings::PredictionMode;
+use crate::config::settings::ConversionRole;
 
 fn select_by_arrow(engine: &mut InputMethodEngine, text: &str) {
     let list = engine.candidates().unwrap();
@@ -23,7 +23,7 @@ fn mixed_list(
     engine: &mut InputMethodEngine,
     reading: &str,
 ) -> Vec<(String, CandidateSource, Option<String>)> {
-    let lookup = engine.primary_lookup();
+    let lookup = engine.space_lookup();
     engine
         .build_conversion_candidates(reading, reading, "", 9, lookup)
         .into_iter()
@@ -164,50 +164,52 @@ fn rewriter_view_lists_the_single_kanji() {
 
 #[test]
 fn single_kanji_preserve_the_configured_space_tab_roles() {
-    for prediction in [
-        PredictionMode::Separate,
-        PredictionMode::Merged,
-        PredictionMode::Off,
+    for role in [
+        ConversionRole::Convert,
+        ConversionRole::Predict,
+        ConversionRole::Plain,
     ] {
-        for swap in [false, true] {
-            for key in [Keysym::SPACE, Keysym::TAB] {
-                let mut engine = composing_with("たか");
-                engine.config.prediction = prediction;
-                engine.config.swap_space_tab = swap;
-                let mut cache = LearningCache::new(LearningConfig::default());
-                cache.record("たか", "高");
-                cache.record("たかだい", "高台");
-                engine.learning = Some(cache);
-                engine.process_key(&press_key(key));
-                let rows = engine.candidates().unwrap().candidates();
-                let primary = (key == Keysym::SPACE) != swap;
-                let predictive = match prediction {
-                    PredictionMode::Separate => !primary,
-                    PredictionMode::Merged => primary,
-                    PredictionMode::Off => false,
-                };
-                let skip = !primary && prediction != PredictionMode::Separate;
-                let context = format!("{prediction:?}, swap={swap}, key={key:?}");
-                assert_eq!(
-                    rows.iter().any(|c| c.text == "高台"),
-                    predictive,
-                    "{context}"
-                );
-                let high: Vec<_> = rows.iter().filter(|c| c.text == "高").collect();
-                assert_eq!(high.len(), 1, "{context}");
-                assert_eq!(
-                    high[0].source,
-                    Some(if skip {
-                        CandidateSource::Rewriter
-                    } else {
-                        CandidateSource::Learning
-                    }),
-                    "{context}"
-                );
-                let variant = rows.iter().find(|c| c.text == "髙").expect("catalog 髙");
-                assert_eq!(variant.source, Some(CandidateSource::Rewriter));
-                assert_eq!(variant.description.as_deref(), Some("高の異体字"));
+        for key in [Keysym::SPACE, Keysym::TAB] {
+            let mut engine = composing_with("たか");
+            // The other key takes a different role, so a key that ignored
+            // its own setting would show up.
+            let other = match role {
+                ConversionRole::Predict => ConversionRole::Plain,
+                _ => ConversionRole::Predict,
+            };
+            if key == Keysym::SPACE {
+                engine.config.space_role = role;
+                engine.config.tab_role = other;
+            } else {
+                engine.config.space_role = other;
+                engine.config.tab_role = role;
             }
+            let mut cache = LearningCache::new(LearningConfig::default());
+            cache.record("たか", "高");
+            cache.record("たかだい", "高台");
+            engine.learning = Some(cache);
+            engine.process_key(&press_key(key));
+            let rows = engine.candidates().unwrap().candidates();
+            let context = format!("{role:?}, key={key:?}");
+            assert_eq!(
+                rows.iter().any(|c| c.text == "高台"),
+                role == ConversionRole::Predict,
+                "{context}"
+            );
+            let high: Vec<_> = rows.iter().filter(|c| c.text == "高").collect();
+            assert_eq!(high.len(), 1, "{context}");
+            assert_eq!(
+                high[0].source,
+                Some(if role == ConversionRole::Plain {
+                    CandidateSource::Rewriter
+                } else {
+                    CandidateSource::Learning
+                }),
+                "{context}"
+            );
+            let variant = rows.iter().find(|c| c.text == "髙").expect("catalog 髙");
+            assert_eq!(variant.source, Some(CandidateSource::Rewriter));
+            assert_eq!(variant.description.as_deref(), Some("高の異体字"));
         }
     }
 }

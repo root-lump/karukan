@@ -10,6 +10,9 @@ chunk_symbols = 1               # Chunk に残せる記号（、。！？など�
 chunk_digits = 0                # Chunk に残せる数字の桁数（0 = 数字はAI変換にかけない）
 chunk_alphabets = 0             # Chunk に残せる英字の数（0 = 英字はAI変換にかけない）
 strategy = "adaptive"           # 変換ストラテジー（adaptive / light / main）
+space_role = "convert"          # Space/↓ の役割（convert / predict / plain。[変換キーの役割](#変換キーの役割) 参照）
+tab_role = "predict"            # Tab の役割
+suggest_window_role = "convert" # 入力中の候補ウィンドウの役割
 num_candidates = 9              # 変換候補数（Space押下時）
 num_suggestions = 3             # 候補ウィンドウが最初に見せる候補数（変換中は4つ目に進むと1ページ分（9件）まで広がる）
 n_threads = 4                   # 推論スレッド数（0 = 全コア使用）
@@ -80,6 +83,29 @@ my-model = "/home/user/models/my-model.gguf"
 既定のモデルを差し替えるには同じキーに書きます（`jinen-v2-small-q5 = "/path/to/model.gguf"`）。不正なエントリは起動時のログと、そのモデルを使うときのエラーに出ます。
 
 設定変更後はfcitx5の再起動（macOSは `killall KarukanIME`）で反映されます。
+
+## 変換キーの役割
+
+Space/↓・Tab・入力中の候補ウィンドウが出す候補を、それぞれ `space_role` / `tab_role` / `suggest_window_role` で選びます。値は次の 3 つです。
+
+| 役割 | 学習履歴 | 予測（読みの続きを補う候補） |
+|---|---|---|
+| `convert` | 使う（読みが一致する候補だけ） | 出さない |
+| `predict` | 使う（読みの続きを補う候補も含む） | 出す（学習履歴と辞書の前方一致から） |
+| `plain` | 使わない | 出さない |
+
+既定は Space が `convert`、Tab が `predict`、入力中の候補ウィンドウが `convert` です。どの役割でも、辞書の完全一致・AI 変換・記号などの候補は出ます。変換する範囲はカーソルまでなので、カーソルが入力の途中にあるときは `predict` でも予測は出ません。入力中に見える候補を Space の候補とそろえたい場合は、`suggest_window_role` を `space_role` と同じ値にしてください。
+
+以前の `prediction` と `swap_space_tab` は廃止しました。config.toml に書かれていても無視され、起動時に警告が出ます。旧設定と同じ動きにするには、次のように書き換えてください。
+
+| 旧設定 | 新設定 |
+|---|---|
+| `prediction = "separate"` | `space_role = "convert"`, `tab_role = "predict"` |
+| `prediction = "merged"` | `space_role = "predict"`, `tab_role = "plain"` |
+| `prediction = "off"` | `space_role = "convert"`, `tab_role = "plain"` |
+| `swap_space_tab = true` | 上の `space_role` と `tab_role` の値を入れ替える |
+
+旧設定では、`off` 以外のとき入力中の候補ウィンドウにも予測が出ていました。同じにするには `suggest_window_role = "predict"` を加えてください。
 
 ## Live Conversion
 
@@ -157,7 +183,7 @@ CPU高負荷時（Rustビルド中など）にかな漢字変換が遅くなる�
 ユーザーが選択した変換結果を記憶し、次回以降の変換で優先表示します。
 
 - 保存先: `~/.local/share/karukan-im/learning.tsv`（macOS: `~/Library/Application Support/com.karukan.karukan-im/learning.tsv`）
-- 完全一致と前方一致（予測変換）の両方に対応
+- 完全一致と前方一致（予測変換）の両方に対応。前方一致は、変換一覧では役割が `predict` のキー（既定では Tab）で、入力中のウィンドウでは `suggest_window_role = "predict"` のときに出る（[変換キーの役割](#変換キーの役割) 参照）
   - 例: 「早稲田大学」を一度変換すると、次回「わせだ」と入力した時点で候補に表示
 - 学習候補は変換時・入力中（auto-suggest）の両方で最大3件表示
 - スコアはrecency（最終使用日時）重視 + 頻度補正
