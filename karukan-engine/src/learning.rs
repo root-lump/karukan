@@ -99,6 +99,30 @@ impl LearningCache {
         self.dirty = true;
     }
 
+    /// The entry for exactly `reading` → `surface`, if one is learned.
+    pub fn entry(&self, reading: &str, surface: &str) -> Option<LearningEntry> {
+        self.entries
+            .get(reading)?
+            .iter()
+            .find(|e| e.surface == surface)
+            .cloned()
+    }
+
+    /// Put `reading` → `surface` back to `prior` — what [`entry`](Self::entry)
+    /// returned before a [`record`](Self::record) — undoing that record:
+    /// `None` removes the entry the record created.
+    pub fn restore(&mut self, reading: &str, surface: &str, prior: Option<LearningEntry>) {
+        let entries = self.entries.entry(reading.to_string()).or_default();
+        entries.retain(|e| e.surface != surface);
+        if let Some(prior) = prior {
+            entries.push(prior);
+        }
+        if entries.is_empty() {
+            self.entries.remove(reading);
+        }
+        self.dirty = true;
+    }
+
     /// Remove every learned entry that would resurface `surface` for input
     /// `reading`: the exact-reading entry plus every longer reading with
     /// `reading` as a prefix (the [`prefix_lookup`](Self::prefix_lookup)

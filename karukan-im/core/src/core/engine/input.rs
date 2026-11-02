@@ -118,6 +118,8 @@ impl InputMethodEngine {
 
     /// Process key in empty state
     pub(super) fn process_key_empty(&mut self, key: &KeyEvent) -> EngineResult {
+        self.track_key_after_commit(key);
+
         // Shift+Space on its own is the "I want a full-width space" gesture,
         // whatever the setting says. Committed directly, so no composition
         // opens for a second Space to convert.
@@ -417,6 +419,7 @@ impl InputMethodEngine {
 
         self.record_learning(&reading, &text);
         self.end_composition();
+        self.note_commit(&reading, &text);
 
         // HideCandidates is required here: the auto-suggest/live-conversion
         // window may be open while Composing, and the macOS frontend's

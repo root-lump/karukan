@@ -15,6 +15,7 @@ mod input;
 mod input_buffer;
 mod mode;
 mod model;
+mod rejection;
 mod strategy;
 mod types;
 
@@ -196,6 +197,15 @@ pub struct InputMethodEngine {
     /// Drained by `poll_loaded_models` at the top of `process_key`; until
     /// then (or if loading failed) the engine runs dictionary/kana-only.
     model_loading: Option<std::sync::mpsc::Receiver<init::LoadedConverters>>,
+    /// Learning records made since the last commit, each with the entry it
+    /// replaced, so a commit the user erases can be unlearned
+    /// (`rejection.rs`).
+    commit_learned: Vec<rejection::LearnedRecord>,
+    /// The last commit while it may still be BackSpaced away.
+    recent_commit: Option<rejection::RecentCommit>,
+    /// A commit the user erased: its surface is demoted the next time its
+    /// reading is converted.
+    rejected_commit: Option<rejection::RejectedCommit>,
 }
 
 impl InputMethodEngine {
@@ -230,6 +240,9 @@ impl InputMethodEngine {
             confirmed_segments: Vec::new(),
             upcoming_segments: Vec::new(),
             model_loading: None,
+            commit_learned: Vec::new(),
+            recent_commit: None,
+            rejected_commit: None,
         }
     }
 
@@ -808,6 +821,8 @@ impl InputMethodEngine {
                 text
             }
         };
+        // Focus is leaving: there is nothing left to erase in this field.
+        self.forget_commit();
         self.surrounding_context = None;
         text
     }
