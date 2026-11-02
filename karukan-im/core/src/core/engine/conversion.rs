@@ -305,6 +305,10 @@ impl InputMethodEngine {
             );
         }
 
+        self.demote_rejected(&reading, &mut candidates);
+        // Restoring the live display must not reselect a rejected surface.
+        let prev_suggest = prev_suggest.filter(|prev| !self.is_rejected(&reading, prev));
+
         if candidates.is_empty() {
             // No candidates: stay composing, untouched (emoji queries with
             // no match land here)
@@ -1076,7 +1080,10 @@ impl InputMethodEngine {
             return;
         }
         if let Some(cache) = &mut self.learning {
+            let prior = cache.entry(reading, surface);
             cache.record(reading, surface);
+            self.commit_learned
+                .push((reading.to_string(), surface.to_string(), prior));
         }
     }
 
@@ -1130,12 +1137,32 @@ impl InputMethodEngine {
             return self.commit_and_resume_tail(&text, &reading, tail);
         }
 
+        let full_reading = self.full_conversion_reading();
         let commit_text = self.finish_conversion(&text, &reading);
+        self.note_commit(&full_reading, &commit_text);
 
         EngineResult::consumed()
             .with_action(EngineAction::HideCandidates)
             .with_action(EngineAction::HideAuxText)
             .with_action(EngineAction::Commit(commit_text))
+    }
+
+    /// Reading of everything a commit from the Conversion state produces:
+    /// the confirmed segments, the current one, then the upcoming ones.
+    fn full_conversion_reading(&self) -> String {
+        let current = match &self.state {
+            InputState::Conversion { reading, .. } => reading.as_str(),
+            _ => "",
+        };
+        let mut full = String::new();
+        for seg in &self.confirmed_segments {
+            full.push_str(&seg.reading);
+        }
+        full.push_str(current);
+        for seg in &self.upcoming_segments {
+            full.push_str(&seg.reading);
+        }
+        full
     }
 
     /// Record learning for the selected text and any confirmed/upcoming
@@ -1177,6 +1204,9 @@ impl InputMethodEngine {
             self.record_learning(reading, text);
         }
         let commit_text = self.finalize_confirmed_segments(text);
+        // Composing resumes right after the commit, so it is never erased
+        // as a unit.
+        self.forget_commit();
 
         self.state = InputState::Empty;
         // The tail is resumed from its reading alone: the keystrokes that
