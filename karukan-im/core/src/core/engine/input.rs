@@ -52,7 +52,10 @@ impl InputMethodEngine {
             let preedit = self.set_composing_state();
             let reading = full_reading;
             let mut all_candidates = self.lookup_suggest_learning_candidates(&reading);
-            append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(&reading));
+            append_candidates_dedup(
+                &mut all_candidates,
+                self.lookup_suggest_dict_candidates(&reading),
+            );
             append_candidates_dedup(&mut all_candidates, self.lookup_rewriter_variants(&reading));
             let aux = self.format_aux_composing();
             if all_candidates.is_empty() {
@@ -94,7 +97,10 @@ impl InputMethodEngine {
             .map(|s| Candidate::with_reading(s, reading))
             .collect();
         append_candidates_dedup(&mut all_candidates, model_candidates);
-        append_candidates_dedup(&mut all_candidates, self.lookup_dict_candidates(reading));
+        append_candidates_dedup(
+            &mut all_candidates,
+            self.lookup_suggest_dict_candidates(reading),
+        );
         let aux = self.format_aux_suggest();
         EngineResult::consumed()
             .with_action(EngineAction::UpdatePreedit(preedit))
@@ -277,12 +283,10 @@ impl InputMethodEngine {
                 let space = self.space_char();
                 self.input_char(space)
             }
-            // Space/Down and Tab carry the primary and secondary conversion
-            // roles; which is which — and whether predictions surface on the
-            // secondary key (mozc's PredictAndConvert) or get mixed into the
-            // primary one — is decided by the `prediction` and
-            // `swap_space_tab` settings. See `start_space_conversion` /
-            // `start_tab_conversion`.
+            // What Space/Down and Tab convert with — exact readings,
+            // predictions too (mozc's PredictAndConvert), or no learning — is
+            // set per key by the `space_role` / `tab_role` settings. See
+            // `start_space_conversion` / `start_tab_conversion`.
             Keysym::TAB => self.start_tab_conversion(),
             Keysym::SPACE | Keysym::DOWN => self.start_space_conversion(),
             // While live conversion is displaying converted text, the arrow

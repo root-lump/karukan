@@ -5,7 +5,7 @@ use karukan_engine::{
     SymbolStyle, WidthRules,
 };
 
-use crate::config::settings::{CandidateWindow, PredictionMode, SpaceStyle, StrategyMode};
+use crate::config::settings::{CandidateWindow, ConversionRole, SpaceStyle, StrategyMode};
 
 use super::super::candidate::CandidateList;
 use super::super::preedit::Preedit;
@@ -111,10 +111,12 @@ pub struct EngineConfig {
     pub verbose: bool,
     /// Whether live conversion is enabled at engine startup
     pub live_conversion: bool,
-    /// How predictive (prefix-match learning) candidates are surfaced
-    pub prediction: PredictionMode,
-    /// Swap the conversion roles of Space and Tab
-    pub swap_space_tab: bool,
+    /// What Space/Down converts with
+    pub space_role: ConversionRole,
+    /// What Tab converts with
+    pub tab_role: ConversionRole,
+    /// What the composing suggestion window offers
+    pub suggest_window_role: ConversionRole,
     /// Whether the engine may load the kana-kanji model on its own
     /// (`spawn_model_loading`, from `init_from_settings`).
     ///
@@ -161,8 +163,9 @@ impl EngineConfig {
             strategy: settings.conversion.strategy,
             verbose: settings.display.verbose,
             live_conversion: settings.conversion.live_conversion,
-            prediction: settings.conversion.prediction,
-            swap_space_tab: settings.conversion.swap_space_tab,
+            space_role: settings.conversion.space_role,
+            tab_role: settings.conversion.tab_role,
+            suggest_window_role: settings.conversion.suggest_window_role,
             // Built from real user settings — always allow lazy model init,
             // even when karukan-im itself is compiled in test configuration.
             lazy_model_init: true,
@@ -193,8 +196,10 @@ impl Default for EngineConfig {
             strategy: StrategyMode::default(),
             verbose: false,
             live_conversion: false,
-            prediction: PredictionMode::default(),
-            swap_space_tab: false,
+            // Mirrors default.toml.
+            space_role: ConversionRole::Convert,
+            tab_role: ConversionRole::Predict,
+            suggest_window_role: ConversionRole::Convert,
             lazy_model_init: !cfg!(test),
             candidate_window: CandidateWindow::default(),
             symbol: SymbolStyle::default(),

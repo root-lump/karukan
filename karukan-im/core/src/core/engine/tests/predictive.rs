@@ -105,8 +105,8 @@ fn dead_romaji_tail_suppresses_prediction() {
     assert!(!texts.contains(&"早稲田".to_string()));
 }
 
-/// The conversion list gets the full ranked predictive set (paged); the
-/// composing suggestion list stays capped at 3.
+/// The predictive conversion list (Tab by default) gets the full ranked
+/// predictive set (paged); the composing suggestion list stays capped at 3.
 #[test]
 fn conversion_list_gets_all_predictive_candidates() {
     let mut engine = InputMethodEngine::new();
@@ -121,7 +121,7 @@ fn conversion_list_gets_all_predictive_candidates() {
     ));
 
     let conversion: Vec<String> = engine
-        .build_conversion_candidates("わせ", "わせ", "", 1, LearningLookup::Exact)
+        .build_conversion_candidates("わせ", "わせ", "", 1, LearningLookup::Predictive)
         .into_iter()
         .map(|c| c.text)
         .collect();
@@ -137,7 +137,7 @@ fn conversion_list_gets_all_predictive_candidates() {
     assert!(suggestions.len() <= 3);
 }
 
-/// The narrowed suggestion stays selectable: わせd + Space rebuilds the
+/// The narrowed suggestion stays selectable: わせd + Tab rebuilds the
 /// conversion list with the same narrowing, so 早稲田 is in the
 /// selectable candidates (and ワセリン is not).
 #[test]
@@ -153,7 +153,7 @@ fn conversion_with_pending_keeps_narrowed_candidates() {
     for ch in "wased".chars() {
         engine.process_key(&press(ch));
     }
-    engine.process_key(&press_key(Keysym::SPACE));
+    engine.process_key(&press_key(Keysym::TAB));
 
     let candidates = engine.candidates().expect("conversion candidates");
     let texts: Vec<&str> = candidates

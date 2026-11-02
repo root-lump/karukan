@@ -1,10 +1,12 @@
 //! Tests for the learning cache and the Space/Tab conversion split.
 //!
+//! With the default roles (`space_role = "convert"`, `tab_role = "predict"`):
 //! Space/Down: convert exactly the typed reading — exact-match learning
 //! candidates only, never predictions beyond what was typed.
 //! Tab at end of buffer: predictive conversion — learned readings that
 //! extend beyond the typed prefix are offered as selectable candidates.
 //! Tab mid-buffer: degrades to the Space behavior (convert up to cursor).
+//! Dictionary prefix matches follow the same split as the learning ones.
 //! Ctrl+Delete: delete the selected learning candidate from the history.
 
 use super::*;
@@ -594,20 +596,23 @@ fn space_key_keeps_learning_in_composing() {
     );
 }
 
-// --- prediction / swap_space_tab settings ---
+// --- space_role / tab_role / suggest_window_role settings ---
 
-use crate::config::settings::PredictionMode;
+use crate::config::settings::ConversionRole;
+use ConversionRole::{Convert, Plain, Predict};
 
-/// Engine with the given prediction/swap settings and a learned entry.
+/// Engine with the given key roles and a learned entry.
 fn engine_with_learned_config(
     reading: &str,
     surface: &str,
-    prediction: PredictionMode,
-    swap_space_tab: bool,
+    space_role: ConversionRole,
+    tab_role: ConversionRole,
+    suggest_window_role: ConversionRole,
 ) -> InputMethodEngine {
     let mut engine = InputMethodEngine::with_config(EngineConfig {
-        prediction,
-        swap_space_tab,
+        space_role,
+        tab_role,
+        suggest_window_role,
         ..EngineConfig::default()
     });
     engine.converters.kanji = None;
@@ -618,10 +623,10 @@ fn engine_with_learned_config(
 }
 
 #[test]
-fn merged_space_includes_predictions() {
-    // prediction = "merged": the primary conversion (Space) mixes in
-    // predictive learning candidates, upstream-style.
-    let mut engine = engine_with_learned_config("あいさつ", "挨拶", PredictionMode::Merged, false);
+fn predict_space_includes_predictions() {
+    // space_role = "predict": Space mixes in predictive learning
+    // candidates, upstream-style.
+    let mut engine = engine_with_learned_config("あいさつ", "挨拶", Predict, Predict, Convert);
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
@@ -631,15 +636,15 @@ fn merged_space_includes_predictions() {
     assert_eq!(
         engine.candidates().and_then(|c| c.selected_text()),
         Some("挨拶"),
-        "merged mode must surface the prediction on Space"
+        "the predict role must surface the prediction on Space"
     );
 }
 
 #[test]
-fn merged_tab_skips_learning() {
-    // prediction = "merged": the secondary key becomes the learning-free
-    // conversion (escape hatch), like the historical Tab behavior.
-    let mut engine = engine_with_learned_config("あい", "藍", PredictionMode::Merged, false);
+fn plain_tab_skips_learning() {
+    // tab_role = "plain": the learning-free conversion (escape hatch),
+    // like the historical Tab behavior.
+    let mut engine = engine_with_learned_config("あい", "藍", Predict, Plain, Convert);
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
@@ -650,7 +655,7 @@ fn merged_tab_skips_learning() {
         candidates
             .iter()
             .all(|c| c.source != Some(CandidateSource::Learning)),
-        "merged mode's Tab must skip learned candidates, got {candidates:?}",
+        "the plain role's Tab must skip learned candidates, got {candidates:?}",
     );
     // Skipping history does not blacklist the same surface from the catalog.
     let ai = candidates
@@ -661,10 +666,10 @@ fn merged_tab_skips_learning() {
 }
 
 #[test]
-fn off_hides_predictions_everywhere() {
-    // prediction = "off": no predictions in the composing suggestion window
-    // nor in either conversion.
-    let mut engine = engine_with_learned_config("あいさつ", "挨拶", PredictionMode::Off, false);
+fn no_predict_role_hides_predictions_everywhere() {
+    // No key takes the predict role: no predictions in the composing
+    // suggestion window nor in either conversion.
+    let mut engine = engine_with_learned_config("あいさつ", "挨拶", Convert, Plain, Convert);
 
     engine.process_key(&press('a'));
     let result = engine.process_key(&press('i'));
@@ -674,22 +679,196 @@ fn off_hides_predictions_everywhere() {
         if let EngineAction::ShowCandidates(list) = action {
             assert!(
                 !list.candidates().iter().any(|c| c.text == "挨拶"),
-                "off mode must hide predictions from the suggestion window"
+                "the suggestion window must hide predictions without the predict role"
             );
         }
     }
 
     // Neither Space nor Tab surfaces it.
-    engine.process_key(&press_key(Keysym::SPACE));
-    let texts = conversion_texts(&engine);
-    assert!(!texts.contains(&"挨拶".to_string()));
+    for key in [Keysym::SPACE, Keysym::TAB] {
+        engine.process_key(&press_key(key));
+        let texts = conversion_texts(&engine);
+        assert!(!texts.contains(&"挨拶".to_string()), "{key:?}: {texts:?}");
+        engine.process_key(&press_key(Keysym::ESCAPE));
+    }
+}
+
+/// Engine with the given key roles and a system dictionary whose only
+/// entry (わせだ → 早稲田) extends the typed reading わせ.
+fn engine_with_dict_prediction(
+    space_role: ConversionRole,
+    tab_role: ConversionRole,
+    suggest_window_role: ConversionRole,
+) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::with_config(EngineConfig {
+        space_role,
+        tab_role,
+        suggest_window_role,
+        ..EngineConfig::default()
+    });
+    engine.converters.kanji = None;
+    engine.dicts.system = Some(dict_from_json(
+        r#"[{"reading":"わせだ","candidates":[{"surface":"早稲田","score":1000.0}]}]"#,
+    ));
+    engine
+}
+
+fn type_romaji(engine: &mut InputMethodEngine, romaji: &str) {
+    for ch in romaji.chars() {
+        engine.process_key(&press(ch));
+    }
 }
 
 #[test]
-fn swap_space_tab_swaps_conversion_roles() {
-    // swap_space_tab = true with the default "separate" prediction:
+fn convert_space_excludes_dictionary_predictions() {
+    let mut engine = engine_with_dict_prediction(Convert, Predict, Convert);
+
+    type_romaji(&mut engine, "wase");
+    engine.process_key(&press_key(Keysym::SPACE));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        !texts.contains(&"早稲田".to_string()),
+        "the convert role's Space must not offer dictionary predictions, got {texts:?}",
+    );
+}
+
+#[test]
+fn convert_space_completes_pending_tail_exactly() {
+    let mut engine = engine_with_dict_prediction(Convert, Predict, Convert);
+    engine.dicts.system = Some(dict_from_json(
+        r#"[
+            {"reading":"にほん","candidates":[{"surface":"日本","score":1000.0}]},
+            {"reading":"にほんご","candidates":[{"surface":"日本語","score":1000.0}]}
+        ]"#,
+    ));
+
+    type_romaji(&mut engine, "nihon");
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let candidates = engine.candidates().unwrap().candidates();
+    let nihon = candidates
+        .iter()
+        .find(|c| c.text == "日本")
+        .unwrap_or_else(|| panic!("Space must complete the tail to 日本, got {candidates:?}"));
+    assert_eq!(nihon.reading.as_deref(), Some("にほん"));
+    assert!(
+        !candidates.iter().any(|c| c.text == "日本語"),
+        "the completed reading is an exact match, not a prediction, got {candidates:?}",
+    );
+}
+
+#[test]
+fn convert_space_completes_multi_char_tail() {
+    let mut engine = engine_with_dict_prediction(Convert, Predict, Convert);
+    engine.dicts.system = Some(dict_from_json(
+        r#"[{"reading":"かいしゃ","candidates":[{"surface":"会社","score":1000.0}]}]"#,
+    ));
+
+    type_romaji(&mut engine, "kaisy");
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let candidates = engine.candidates().unwrap().candidates();
+    let kaisha = candidates
+        .iter()
+        .find(|c| c.text == "会社")
+        .unwrap_or_else(|| panic!("Space must complete the tail to 会社, got {candidates:?}"));
+    assert_eq!(kaisha.reading.as_deref(), Some("かいしゃ"));
+}
+
+#[test]
+fn predict_tab_offers_dictionary_predictions() {
+    let mut engine = engine_with_dict_prediction(Convert, Predict, Convert);
+
+    type_romaji(&mut engine, "wase");
+    engine.process_key(&press_key(Keysym::TAB));
+
+    let candidates = engine.candidates().unwrap().candidates();
+    let waseda = candidates
+        .iter()
+        .find(|c| c.text == "早稲田")
+        .unwrap_or_else(|| panic!("Tab must offer 早稲田, got {candidates:?}"));
+    assert_eq!(waseda.reading.as_deref(), Some("わせだ"));
+}
+
+#[test]
+fn predict_space_offers_dictionary_predictions() {
+    let mut engine = engine_with_dict_prediction(Predict, Plain, Convert);
+
+    type_romaji(&mut engine, "wase");
+    engine.process_key(&press_key(Keysym::SPACE));
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        texts.contains(&"早稲田".to_string()),
+        "the predict role's Space must offer dictionary predictions, got {texts:?}",
+    );
+}
+
+#[test]
+fn plain_tab_excludes_dictionary_predictions() {
+    let mut engine = engine_with_dict_prediction(Predict, Plain, Convert);
+
+    type_romaji(&mut engine, "wase");
+    engine.process_key(&press_key(Keysym::TAB));
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        !texts.contains(&"早稲田".to_string()),
+        "the plain role's Tab must not offer dictionary predictions, got {texts:?}",
+    );
+}
+
+#[test]
+fn no_predict_role_hides_dictionary_predictions_everywhere() {
+    let mut engine = engine_with_dict_prediction(Convert, Plain, Convert);
+
+    type_romaji(&mut engine, "was");
+    let result = engine.process_key(&press('e'));
+    for action in &result.actions {
+        if let EngineAction::ShowCandidates(list) = action {
+            assert!(
+                !list.candidates().iter().any(|c| c.text == "早稲田"),
+                "the suggestion window must hide dictionary predictions without the predict role"
+            );
+        }
+    }
+
+    for key in [Keysym::SPACE, Keysym::TAB] {
+        engine.process_key(&press_key(key));
+        let texts = conversion_texts(&engine);
+        assert!(
+            !texts.contains(&"早稲田".to_string()),
+            "dictionary predictions must stay hidden after {key:?}, got {texts:?}",
+        );
+        engine.process_key(&press_key(Keysym::ESCAPE));
+    }
+}
+
+#[test]
+fn predict_tab_mid_buffer_excludes_dictionary_predictions() {
+    let mut engine = engine_with_dict_prediction(Convert, Predict, Convert);
+
+    type_romaji(&mut engine, "wasea");
+    engine.process_key(&press_key(Keysym::LEFT));
+    assert_eq!(engine.input_buf.cursor(), 2);
+
+    engine.process_key(&press_key(Keysym::TAB));
+    assert!(matches!(engine.state(), InputState::Conversion { .. }));
+
+    let texts = conversion_texts(&engine);
+    assert!(
+        !texts.contains(&"早稲田".to_string()),
+        "Tab mid-buffer must not offer dictionary predictions, got {texts:?}",
+    );
+}
+
+#[test]
+fn space_and_tab_roles_can_be_swapped() {
+    // space_role = "predict", tab_role = "convert", the reverse of the defaults:
     // Space becomes the predictive conversion, Tab the exact one.
-    let mut engine = engine_with_learned_config("あいさつ", "挨拶", PredictionMode::Separate, true);
+    let mut engine = engine_with_learned_config("あいさつ", "挨拶", Predict, Convert, Convert);
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
@@ -697,7 +876,7 @@ fn swap_space_tab_swaps_conversion_roles() {
     let texts = conversion_texts(&engine);
     assert!(
         texts.contains(&"挨拶".to_string()),
-        "swapped Space must offer predictions, got {:?}",
+        "Space with the predict role must offer predictions, got {:?}",
         texts,
     );
     engine.process_key(&press_key(Keysym::ESCAPE));
@@ -706,7 +885,112 @@ fn swap_space_tab_swaps_conversion_roles() {
     let texts = conversion_texts(&engine);
     assert!(
         !texts.contains(&"挨拶".to_string()),
-        "swapped Tab must convert the typed reading only, got {:?}",
+        "Tab with the convert role must convert the typed reading only, got {:?}",
         texts,
     );
+}
+
+// --- composing suggestion window (suggest_window_role) ---
+
+/// Engine with the given suggestion-window role, learned あいさつ→挨拶
+/// and あい→藍, and the dictionary entry わせだ→早稲田.
+fn engine_for_suggest_window(config: EngineConfig) -> InputMethodEngine {
+    let mut engine = InputMethodEngine::with_config(config);
+    engine.converters.kanji = None;
+    let mut cache = LearningCache::new(LearningConfig::default());
+    cache.record("あいさつ", "挨拶");
+    cache.record("あい", "藍");
+    engine.learning = Some(cache);
+    engine.dicts.system = Some(dict_from_json(
+        r#"[{"reading":"わせだ","candidates":[{"surface":"早稲田","score":1000.0}]}]"#,
+    ));
+    engine
+}
+
+fn engine_with_suggest_window_role(role: ConversionRole) -> InputMethodEngine {
+    engine_for_suggest_window(EngineConfig {
+        suggest_window_role: role,
+        ..EngineConfig::default()
+    })
+}
+
+/// Type `romaji` from Empty and return what the last suggestion window showed.
+fn suggestions_after(engine: &mut InputMethodEngine, romaji: &str) -> Vec<Candidate> {
+    engine.reset();
+    let mut shown = vec![];
+    for ch in romaji.chars() {
+        for action in engine.process_key(&press(ch)).actions {
+            if let EngineAction::ShowCandidates(list) = action {
+                shown = list.candidates().to_vec();
+            }
+        }
+    }
+    shown
+}
+
+fn assert_no_suggested_predictions(engine: &mut InputMethodEngine) {
+    let ai = suggestions_after(engine, "ai");
+    assert!(
+        !ai.iter().any(|c| c.text == "挨拶"),
+        "the suggestion window must not predict 挨拶 for あい, got {ai:?}",
+    );
+    let wase = suggestions_after(engine, "wase");
+    assert!(
+        !wase.iter().any(|c| c.text == "早稲田"),
+        "the suggestion window must not predict 早稲田 for わせ, got {wase:?}",
+    );
+}
+
+#[test]
+fn suggest_window_convert_excludes_predictions() {
+    let mut engine = engine_with_suggest_window_role(Convert);
+
+    assert_no_suggested_predictions(&mut engine);
+    let ai = suggestions_after(&mut engine, "ai");
+    assert!(
+        ai.iter()
+            .any(|c| c.text == "藍" && c.source == Some(CandidateSource::Learning)),
+        "the exact learned 藍 must still be suggested, got {ai:?}",
+    );
+}
+
+#[test]
+fn suggest_window_predict_includes_predictions() {
+    let mut engine = engine_with_suggest_window_role(Predict);
+
+    let ai = suggestions_after(&mut engine, "ai");
+    assert!(
+        ai.iter().any(|c| c.text == "挨拶"),
+        "the predict role must suggest 挨拶 for あい, got {ai:?}",
+    );
+    let wase = suggestions_after(&mut engine, "wase");
+    assert!(
+        wase.iter().any(|c| c.text == "早稲田"),
+        "the predict role must suggest 早稲田 for わせ, got {wase:?}",
+    );
+}
+
+#[test]
+fn suggest_window_plain_skips_learning() {
+    let mut engine = engine_with_suggest_window_role(Plain);
+
+    let ai = suggestions_after(&mut engine, "ai");
+    assert!(
+        !ai.is_empty(),
+        "the suggestion window must still show candidates"
+    );
+    assert!(
+        ai.iter()
+            .all(|c| c.source != Some(CandidateSource::Learning)),
+        "the plain role must not suggest learned candidates, got {ai:?}",
+    );
+}
+
+#[test]
+fn default_suggest_window_shows_no_predictions() {
+    // What the user sees while typing must match what Space offers, and
+    // Space's default role does not predict.
+    let mut engine = engine_for_suggest_window(EngineConfig::default());
+
+    assert_no_suggested_predictions(&mut engine);
 }

@@ -8,7 +8,7 @@ use tracing::debug;
 
 use super::filter::source_for_key;
 use super::*;
-use crate::config::settings::PredictionMode;
+use crate::config::settings::ConversionRole;
 
 /// Maximum number of learning candidates to show
 const MAX_LEARNING_CANDIDATES: usize = 3;
@@ -113,55 +113,31 @@ impl CandidateBuilder {
     }
 }
 
+/// The learning lookup a conversion role maps to.
+fn role_lookup(role: ConversionRole) -> LearningLookup {
+    match role {
+        ConversionRole::Convert => LearningLookup::Exact,
+        ConversionRole::Predict => LearningLookup::Predictive,
+        ConversionRole::Plain => LearningLookup::Skip,
+    }
+}
+
 impl InputMethodEngine {
-    /// Space/Down key: the primary conversion, or the secondary one when
-    /// `swap_space_tab` is set.
+    /// Space/Down key: converts with the `space_role` setting.
     pub(super) fn start_space_conversion(&mut self) -> EngineResult {
-        if self.config.swap_space_tab {
-            self.start_secondary_conversion()
-        } else {
-            self.start_primary_conversion()
-        }
+        self.start_conversion_impl(self.space_lookup(), false)
     }
 
-    /// Tab key: the secondary conversion, or the primary one when
-    /// `swap_space_tab` is set.
+    /// Tab key: converts with the `tab_role` setting.
     pub(super) fn start_tab_conversion(&mut self) -> EngineResult {
-        if self.config.swap_space_tab {
-            self.start_primary_conversion()
-        } else {
-            self.start_secondary_conversion()
-        }
+        self.start_conversion_impl(role_lookup(self.config.tab_role), false)
     }
 
-    /// The primary conversion role (bound to Space/Down by default):
-    /// converts exactly the typed reading, except in
-    /// [`PredictionMode::Merged`] where predictive learning candidates are
-    /// mixed in — the prediction shown while typing carries straight into
-    /// the conversion.
-    fn start_primary_conversion(&mut self) -> EngineResult {
-        self.start_conversion_impl(self.primary_lookup(), false)
-    }
-
-    /// The learning lookup the primary conversion role uses, per the
-    /// `prediction` setting. Also what the paths that rebuild an ordinary
-    /// conversion (chunk break, typing-refine) ask for.
-    pub(super) fn primary_lookup(&self) -> LearningLookup {
-        match self.config.prediction {
-            PredictionMode::Merged => LearningLookup::Predictive,
-            PredictionMode::Separate | PredictionMode::Off => LearningLookup::Exact,
-        }
-    }
-
-    /// The secondary conversion role (bound to Tab by default): the
-    /// predictive conversion in [`PredictionMode::Separate`], otherwise a
-    /// learning-free conversion that lets users escape unwanted history.
-    fn start_secondary_conversion(&mut self) -> EngineResult {
-        let lookup = match self.config.prediction {
-            PredictionMode::Separate => LearningLookup::Predictive,
-            PredictionMode::Merged | PredictionMode::Off => LearningLookup::Skip,
-        };
-        self.start_conversion_impl(lookup, false)
+    /// The learning lookup of Space's role. Paths that rebuild an ordinary
+    /// conversion in place (chunk break, typing-refine) rebuild it with
+    /// Space's role, since Space is the ordinary conversion key.
+    pub(super) fn space_lookup(&self) -> LearningLookup {
+        role_lookup(self.config.space_role)
     }
 
     /// Like the key-driven conversions, but keeps the currently displayed
@@ -218,9 +194,10 @@ impl InputMethodEngine {
         };
 
         // The unresolved romaji tail keeps narrowing the predictive
-        // dictionary lookup, so a suggestion visible while typing (わせd →
-        // 早稲田) stays selectable in the conversion list. A cursor split has
-        // no live tail of its own: the reading stops at the caret.
+        // dictionary lookup, so under the predictive conversion
+        // (`LearningLookup::Predictive`) a suggestion visible while typing
+        // (わせd → 早稲田) stays selectable in the conversion list. A cursor
+        // split has no live tail of its own: the reading stops at the caret.
         let (base, pending) = if tail.is_some() {
             (reading.clone(), String::new())
         } else {
@@ -423,8 +400,9 @@ impl InputMethodEngine {
     /// exact matches then predictive (prefix-extending) ones, deduped.
     ///
     /// `pending` narrows the predictive lookup to readings the romaji tail
-    /// can still become (わせ + `d` keeps わせだ…, drops わせり…);
-    /// `predictive_limit` caps those results. `only` restricts search and
+    /// can still become (わせ + `d` keeps わせだ…, drops わせり…), and
+    /// completes the exact lookup the same way (にほ + `n` → にほん);
+    /// `predictive_limit` caps the predictive results. `only` restricts search and
     /// dedup to one dictionary, so shared surfaces stay visible per view.
     pub(super) fn search_dictionaries(
         &self,
@@ -445,22 +423,41 @@ impl InputMethodEngine {
         let mut candidates = Vec::new();
         let mut seen = HashSet::new();
 
-        // Exact matches, user dictionary first — only when no romaji tail
-        // is pending (an exact hit on the base would ignore the typed
-        // tail). Candidates are sorted by score at build/load time
+        // Exact matches, user dictionary first. A pending romaji tail is
+        // completed with each kana it can still become (にほ + `n` → にほん)
+        // and those readings are looked up exactly, so one unfinished
+        // trailing keystroke does not blank out the dictionary. These are
+        // exact matches, not predictions: they do not extend the typed
+        // reading, and so are looked up whatever `predictive_limit` is.
+        // Candidates are sorted by score at build/load time.
+        let constraint = self.tail_constraint(pending);
         for &(dict, source) in &dicts {
-            if !pending.is_empty() {
-                break;
-            }
-            let Some(result) = dict.and_then(|d| d.exact_match_search(reading)) else {
-                continue;
-            };
-            for cand in result.candidates {
-                if candidates.len() >= limit {
-                    break;
+            let Some(dict) = dict else { continue };
+            let completions: Vec<String> = match &constraint {
+                TailConstraint::Unconstrained => vec![reading.to_string()],
+                TailConstraint::Narrow(expansions) => {
+                    expansions.iter().map(|e| format!("{reading}{e}")).collect()
                 }
-                if seen.insert(cand.surface.clone()) {
-                    candidates.push(AnnotatedCandidate::new(cand.surface.clone(), source));
+                TailConstraint::Dead => Vec::new(),
+            };
+            for completed in completions {
+                let Some(result) = dict.exact_match_search(&completed) else {
+                    continue;
+                };
+                // The completed reading rides on the candidate so committing
+                // records under the right key; with no tail it equals the
+                // input reading and stays implicit.
+                let cand_reading = (completed != reading).then_some(completed);
+                for cand in result.candidates {
+                    if candidates.len() >= limit {
+                        break;
+                    }
+                    if seen.insert(cand.surface.clone()) {
+                        candidates.push(
+                            AnnotatedCandidate::new(cand.surface.clone(), source)
+                                .with_reading(cand_reading.clone()),
+                        );
+                    }
                 }
             }
         }
@@ -469,7 +466,6 @@ impl InputMethodEngine {
         // mirroring the learning cache's prefix lookup. The full reading
         // rides on the candidate so selecting it commits and records under
         // the right key.
-        let constraint = self.tail_constraint(pending);
         if reading.chars().count() >= min_prefix_chars
             && !matches!(constraint, TailConstraint::Dead)
         {
@@ -521,10 +517,12 @@ impl InputMethodEngine {
     /// Learning → User Dictionary → Model → System Dictionary → Fallback.
     ///
     /// `base`/`pending` split the reading for the dictionary lookup: while
-    /// a romaji tail is unresolved the predictive search stays narrowed to
-    /// it (base わせ + `d` → わせだ…), with no tail they equal `reading`/"".
+    /// a romaji tail is unresolved the predictive search (run only for
+    /// [`LearningLookup::Predictive`]) stays narrowed to it (base わせ + `d`
+    /// → わせだ…), with no tail they equal `reading`/"".
     ///
-    /// `lookup` decides which learning candidates step (1) includes — see
+    /// `lookup` decides which learning candidates step (1) includes and
+    /// whether step (2)/(4) add prefix-extending dictionary readings — see
     /// [`LearningLookup`]. Segment range navigation always passes
     /// [`LearningLookup::Exact`]: auto-selecting a longer prediction there
     /// would silently commit characters the user never typed.
@@ -566,12 +564,19 @@ impl InputMethodEngine {
 
         // 2. User dictionary candidates (system dictionary follows the model
         //    in step 4, so the two are split here).
+        //    Prefix-extending dictionary readings are predictions, so they
+        //    ride on the same switch as the learning cache's prefix matches.
+        let predictive_limit = if lookup == LearningLookup::Predictive {
+            usize::MAX
+        } else {
+            0
+        };
         let (user_dict, system_dict): (Vec<_>, Vec<_>) = self
             .search_dictionaries(
                 base,
                 pending,
                 usize::MAX,
-                usize::MAX,
+                predictive_limit,
                 MIN_PREDICTIVE_PREFIX_CHARS,
                 None,
             )
@@ -647,14 +652,13 @@ impl InputMethodEngine {
         builder.into_candidates()
     }
 
-    /// Learning candidates for the Composing suggestion window. Predictive
-    /// (prefix) matches are hints for the prediction key, so they are hidden
-    /// entirely in [`PredictionMode::Off`].
+    /// Learning candidates for the Composing suggestion window, per the
+    /// `suggest_window_role` setting.
     pub(super) fn lookup_suggest_learning_candidates(&self, reading: &str) -> Vec<Candidate> {
-        if self.config.prediction == PredictionMode::Off {
-            self.lookup_learning_candidates_exact(reading)
-        } else {
-            self.lookup_learning_candidates(reading)
+        match self.config.suggest_window_role {
+            ConversionRole::Predict => self.lookup_learning_candidates(reading),
+            ConversionRole::Convert => self.lookup_learning_candidates_exact(reading),
+            ConversionRole::Plain => vec![],
         }
     }
 
@@ -752,6 +756,9 @@ impl InputMethodEngine {
     }
 
     /// Dictionary candidates for the composing suggestion list (one page).
+    // The composing window goes through `lookup_suggest_dict_candidates`;
+    // this always-predictive form is kept for upstream's `predictive.rs`.
+    #[cfg(test)]
     pub(super) fn lookup_dict_candidates(&self, reading: &str) -> Vec<Candidate> {
         let pending = self.input_buf.pending();
         self.search_dictionaries(
@@ -759,6 +766,28 @@ impl InputMethodEngine {
             &pending,
             CandidateList::DEFAULT_PAGE_SIZE,
             MAX_PREDICTIVE_SUGGESTIONS,
+            MIN_PREDICTIVE_PREFIX_CHARS,
+            None,
+        )
+        .into_iter()
+        .map(|ac| ac.into_candidate(reading))
+        .collect()
+    }
+
+    /// Dictionary candidates for the composing suggestion window, per the
+    /// `suggest_window_role` setting: prefix matches are predictions, so
+    /// only the predict role lists them.
+    pub(super) fn lookup_suggest_dict_candidates(&self, reading: &str) -> Vec<Candidate> {
+        let predictive_limit = match self.config.suggest_window_role {
+            ConversionRole::Predict => MAX_PREDICTIVE_SUGGESTIONS,
+            ConversionRole::Convert | ConversionRole::Plain => 0,
+        };
+        let pending = self.input_buf.pending();
+        self.search_dictionaries(
+            reading,
+            &pending,
+            CandidateList::DEFAULT_PAGE_SIZE,
+            predictive_limit,
             MIN_PREDICTIVE_PREFIX_CHARS,
             None,
         )
@@ -1027,7 +1056,7 @@ impl InputMethodEngine {
         self.in_composing(true, |engine| engine.insert_chunk_break());
         match filter {
             Some(source) => self.start_conversion_with_filter(source),
-            None => self.start_conversion(self.primary_lookup()),
+            None => self.start_conversion(self.space_lookup()),
         }
     }
 
