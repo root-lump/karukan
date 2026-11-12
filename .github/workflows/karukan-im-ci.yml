@@ -8,6 +8,7 @@ on:
       - 'karukan-engine/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - '.cargo/config.toml'
       - '.github/workflows/karukan-im-ci.yml'
   # No `paths` filter here on purpose: a workflow skipped by path filtering
   # never creates its check runs, so required status checks stay stuck on
@@ -51,6 +52,7 @@ jobs:
               - 'karukan-engine/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.cargo/config.toml'
               - '.github/workflows/karukan-im-ci.yml'
 
   check:

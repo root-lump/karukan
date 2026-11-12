@@ -9,7 +9,7 @@ Karukan のキーバインド一覧です。共通キーバインドは Linux (f
 | 文字キー | ローマ字入力 → ひらがな変換 |
 | Space / ↓ | かな漢字変換を開始（役割は設定 `space_role` で決まる。既定の `convert` は前方一致を含まない。[変換キーの役割](configuration.md#変換キーの役割) 参照） |
 | Tab | 変換を開始（役割は設定 `tab_role` で決まる。既定の `predict` は学習履歴・辞書の前方一致を含む予測変換） |
-| Enter | ひらがなのまま確定 |
+| Enter / Ctrl+M | ひらがなのまま確定 |
 | Escape | 入力をキャンセル（ライブ変換中は1回目でライブ変換を解除してひらがなに戻り、2回目でキャンセル） |
 | Backspace | 1文字削除 |
 | Delete | カーソル位置の文字を削除 |
@@ -37,7 +37,7 @@ Karukan のキーバインド一覧です。共通キーバインドは Linux (f
 | ↑ / Shift+Space / Shift+Tab / Ctrl+P | 前の候補 |
 | PageDown / PageUp | 候補ページの移動 |
 | Ctrl+1〜9 | 表示中の候補を番号で選択・確定（ライブ変換の ON / OFF によらず常に有効） |
-| Enter | 選択中の候補を確定 |
+| Enter / Ctrl+M | 選択中の候補を確定 |
 | Escape | 変換をキャンセル（ひらがなに戻る） |
 | Ctrl+Backspace / Ctrl+Delete | 選択中の学習候補を履歴から削除 |
 | Ctrl+J | カーソル位置で区切り、別候補が出る範囲を狭める（絞り込み中も表示は維持。[詳細](chunking.md)） |

@@ -10,6 +10,7 @@ mod cursor;
 mod display;
 mod filter;
 mod form;
+mod guard;
 mod init;
 mod input;
 mod input_buffer;
@@ -24,6 +25,7 @@ pub use types::*;
 use std::collections::HashSet;
 
 use cache::{ConversionCache, ConversionCacheKey, ModelRole};
+use guard::{Budget, OverloadGuard};
 use input_buffer::InputBuffer;
 
 #[cfg(test)]
@@ -129,6 +131,9 @@ pub struct InputMethodEngine {
     config: EngineConfig,
     /// Conversion timing and adaptive model metrics
     metrics: ConversionMetrics,
+    /// Rests a model that overran its time budget, so a machine too busy
+    /// to convert in time still takes keystrokes
+    guard: OverloadGuard,
     /// Current input mode plus the mode to come back to when a temporary
     /// mode (Emoji, Alphabet) ends — see [`ModeState`]
     mode: ModeState,
@@ -223,6 +228,7 @@ impl InputMethodEngine {
             surrounding_context: None,
             config: EngineConfig::default(),
             metrics: ConversionMetrics::default(),
+            guard: OverloadGuard::new(EngineConfig::default().timeout_ms),
             mode: ModeState::default(),
             input_buf: InputBuffer::new(),
             live: LiveConversion::default(),
@@ -263,8 +269,13 @@ impl InputMethodEngine {
         // rebuilt rather than configured after the fact. It carries the
         // width rules too: a keystroke settles at the width in force when
         // it was typed.
-        engine.converters.romaji = RomajiConverter::with_rules(config.symbol, config.width);
+        // A user romaji table replaces the built-in rules altogether.
+        engine.converters.romaji = match &config.romaji_table {
+            Some(table) => RomajiConverter::with_chain_table(table.clone(), config.width),
+            None => RomajiConverter::with_rules(config.symbol, config.width),
+        };
         engine.converters.date = DateRewriter::new(config.date.clone());
+        engine.guard = OverloadGuard::new(config.timeout_ms);
         engine.config = config;
         engine
     }
