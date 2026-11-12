@@ -912,6 +912,14 @@ impl InputMethodEngine {
             }
             // Backspace cancels back to the composition, like Escape.
             Keysym::BACKSPACE => self.cancel_conversion(),
+            // Ctrl+H deletes like Backspace, matching mozc's MS-IME keymap.
+            Keysym::KEY_H | Keysym::KEY_H_UPPER if key.modifiers.control_key => {
+                if self.state.filter().is_some() {
+                    self.refine_through_composing(key)
+                } else {
+                    self.cancel_conversion()
+                }
+            }
             Keysym::LEFT if key.modifiers.shift_key => self.shrink_conversion_range(),
             Keysym::RIGHT if key.modifiers.shift_key => self.expand_conversion_range(),
             // The arrow keys walk the segments (fork-only segment
