@@ -465,7 +465,7 @@ fn evaluate_run(run: &str, romaji: &RomajiConverter) -> Vec<Element> {
             if romaji.starts_rule(c) {
                 c
             } else {
-                romaji.width().apply(c)
+                romaji.settle_char(c)
             }
         })
         .collect();
@@ -527,7 +527,7 @@ fn settle_chars(chars: &[char], raw: &str, romaji: &RomajiConverter) -> Vec<Elem
             out.push(Element::Romaji(c));
         } else {
             out.push(Element::Converted {
-                ch: romaji.width().apply(c),
+                ch: romaji.settle_char(c),
                 raw: Some(raw_pending.take().unwrap_or_default().to_string()),
             });
         }

@@ -288,8 +288,12 @@ fn collapsed_lists_keep_variant_notes_on_dictionary_and_model_rows() {
         engine.config.num_suggestions = 1;
         let json = r#"[{"reading":"たか","candidates":[{"surface":"髙","score":0.0}]}]"#;
         match source {
-            CandidateSource::UserDictionary => engine.dicts.user = Some(dict_from_json(json)),
-            CandidateSource::Dictionary => engine.dicts.system = Some(dict_from_json(json)),
+            CandidateSource::UserDictionary => {
+                engine.dicts.user = Some(std::sync::Arc::new(dict_from_json(json)))
+            }
+            CandidateSource::Dictionary => {
+                engine.dicts.system = Some(std::sync::Arc::new(dict_from_json(json)))
+            }
             CandidateSource::Model => seed_model_cache(&mut engine, "タカ", "", &["髙"]),
             _ => unreachable!(),
         }

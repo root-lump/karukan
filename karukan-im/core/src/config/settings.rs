@@ -6,11 +6,13 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use directories::ProjectDirs;
 use karukan_engine::{
-    BracketStyle, DateConfig, ModelSource, PunctuationStyle, SlashStyle, SymbolStyle, WidthRules,
+    BracketStyle, ChainTable, DateConfig, ModelSource, PunctuationStyle, SlashStyle, SymbolStyle,
+    WidthRules,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
@@ -35,6 +37,10 @@ pub struct Settings {
     pub date: DateConfig,
     /// Conversion models, keyed by the name `model` / `light_model` refer to
     pub models: BTreeMap<String, ModelDef>,
+    /// The user's romaji table (`romaji.tsv` beside config.toml), replacing
+    /// the built-in rules. Not part of config.toml.
+    #[serde(skip)]
+    pub romaji_table: Option<Arc<ChainTable>>,
 }
 
 /// One `[models]` entry as written: a string (the path of a local GGUF,
@@ -222,6 +228,11 @@ pub struct ConversionSettings {
     /// Maximum acceptable latency in milliseconds for auto-suggest (0 = disabled)
     /// When a main model conversion exceeds this, the engine adaptively switches to light_model
     pub max_latency_ms: u64,
+    /// Time budget in milliseconds for one live conversion (0 = no limit).
+    /// A model that overruns it is abandoned for that keystroke — the
+    /// reading stays kana, with dictionary candidates — and rested before
+    /// it is tried again. A Space conversion gets four times as long
+    pub timeout_ms: u64,
     /// Number of threads for llama.cpp inference (0 = all cores, llama.cpp default)
     pub n_threads: u32,
     /// Enable live conversion at startup (Ctrl+Shift+L still toggles at runtime)
@@ -369,10 +380,26 @@ impl Settings {
     /// an IME must start. The failure is logged, so a typo never silently
     /// resets every setting.
     pub fn load_or_default() -> Self {
-        Self::load().unwrap_or_else(|e| {
+        let mut settings = Self::load().unwrap_or_else(|e| {
             error!("config.toml not loaded, using defaults: {e:#}");
             Self::default()
-        })
+        });
+        settings.romaji_table = Self::load_romaji_table();
+        settings
+    }
+
+    /// Load `romaji.tsv` (azooKey/hazkey format) from the config directory.
+    /// `None` when it is absent or has no rules: the built-in rules apply.
+    pub fn load_romaji_table() -> Option<Arc<ChainTable>> {
+        let path = Self::config_dir()?.join("romaji.tsv");
+        let tsv = fs::read_to_string(&path).ok()?;
+        let table = ChainTable::parse_tsv(&tsv);
+        if table.is_empty() {
+            warn!("{path:?} has no rules, using the built-in romaji rules");
+            return None;
+        }
+        debug!("Loaded romaji table from {:?}", path);
+        Some(Arc::new(table))
     }
 
     /// Load settings from a specific file, merged on top of defaults.
@@ -643,14 +670,14 @@ num_candidates = 3
     #[test]
     fn test_default_models_resolve() {
         let settings = Settings::default();
-        assert_eq!(settings.conversion.model, "jinen-v2-small-q5");
-        assert_eq!(settings.conversion.light_model, "jinen-v2-xsmall-q5");
+        assert_eq!(settings.conversion.model, "jinen-v2-small-q8");
+        assert_eq!(settings.conversion.light_model, "jinen-v2-xsmall-q8");
         let source = settings.model_source(&settings.conversion.model).unwrap();
         assert_eq!(
             source,
             ModelSource::HuggingFace {
                 repo: "togatogah/jinen-v2-small.gguf".to_string(),
-                filename: "jinen-v2-small-Q5_K_M.gguf".to_string(),
+                filename: "jinen-v2-small-Q8_0.gguf".to_string(),
             }
         );
         for key in settings.models.keys() {

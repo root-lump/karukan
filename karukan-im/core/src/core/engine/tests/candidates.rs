@@ -113,7 +113,7 @@ fn composing_suggestions_truncated_to_num_suggestions() {
         num_suggestions: 2,
         ..EngineConfig::default()
     });
-    engine.dicts.system = Some(dict_with_many_candidates());
+    engine.dicts.system = Some(std::sync::Arc::new(dict_with_many_candidates()));
 
     engine.process_key(&press('a'));
     let result = engine.process_key(&press('i'));
@@ -135,7 +135,7 @@ fn composing_suggestions_not_truncated_below_num_suggestions() {
         num_suggestions: 10,
         ..EngineConfig::default()
     });
-    engine.dicts.system = Some(dict_with_many_candidates());
+    engine.dicts.system = Some(std::sync::Arc::new(dict_with_many_candidates()));
 
     engine.process_key(&press('a'));
     let result = engine.process_key(&press('i'));
@@ -155,7 +155,7 @@ fn composing_suggestions_zero_clamped_to_one() {
         num_suggestions: 0,
         ..EngineConfig::default()
     });
-    engine.dicts.system = Some(dict_with_many_candidates());
+    engine.dicts.system = Some(std::sync::Arc::new(dict_with_many_candidates()));
 
     engine.process_key(&press('a'));
     let result = engine.process_key(&press('i'));
@@ -177,7 +177,7 @@ fn conversion_candidates_ignore_num_suggestions() {
         num_suggestions: 1,
         ..EngineConfig::default()
     });
-    engine.dicts.system = Some(dict_with_many_candidates());
+    engine.dicts.system = Some(std::sync::Arc::new(dict_with_many_candidates()));
 
     engine.process_key(&press('a'));
     engine.process_key(&press('i'));
@@ -233,7 +233,7 @@ fn engine_with_collapsed_conversion(num_suggestions: usize) -> InputMethodEngine
         num_suggestions,
         ..EngineConfig::default()
     });
-    engine.dicts.system = Some(dict_with_many_candidates());
+    engine.dicts.system = Some(std::sync::Arc::new(dict_with_many_candidates()));
     engine
 }
 

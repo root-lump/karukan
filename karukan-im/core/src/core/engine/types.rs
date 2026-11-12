@@ -1,8 +1,10 @@
 //! Type definitions for the IME engine
 
+use std::sync::Arc;
+
 use karukan_engine::{
-    DateConfig, DateRewriter, Dictionary, KanaKanjiConverter, RewriterChain, RomajiConverter,
-    SymbolStyle, WidthRules,
+    ChainTable, DateConfig, DateRewriter, Dictionary, KanaKanjiConverter, RewriterChain,
+    RomajiConverter, SymbolStyle, WidthRules,
 };
 
 use crate::config::settings::{CandidateWindow, ConversionRole, SpaceStyle, StrategyMode};
@@ -105,6 +107,10 @@ pub struct EngineConfig {
     /// Maximum acceptable latency in milliseconds for auto-suggest (0 = disabled)
     /// When a main model conversion exceeds this, the engine adaptively switches to light_model
     pub max_latency_ms: u64,
+    /// Time one live conversion may take in milliseconds (0 = no limit). A
+    /// model that overruns it is abandoned for that keystroke and rested;
+    /// see `OverloadGuard`
+    pub timeout_ms: u64,
     /// Conversion strategy mode (adaptive, light, main)
     pub strategy: StrategyMode,
     /// Show the detailed aux line (Ctrl+Shift+V toggles it).
@@ -137,6 +143,9 @@ pub struct EngineConfig {
     pub space: SpaceStyle,
     /// Date/time phrases and their formats
     pub date: DateConfig,
+    /// A user romaji table replacing the built-in rules (see
+    /// `Settings::romaji_table`)
+    pub romaji_table: Option<Arc<ChainTable>>,
 }
 
 impl EngineConfig {
@@ -160,6 +169,7 @@ impl EngineConfig {
             beam_chars: settings.conversion.beam_chars,
             beam_width: settings.conversion.beam_width,
             max_latency_ms: settings.conversion.max_latency_ms,
+            timeout_ms: settings.conversion.timeout_ms,
             strategy: settings.conversion.strategy,
             verbose: settings.display.verbose,
             live_conversion: settings.conversion.live_conversion,
@@ -174,6 +184,7 @@ impl EngineConfig {
             width: settings.width,
             space: settings.symbol.space,
             date: settings.date.clone(),
+            romaji_table: settings.romaji_table.clone(),
         }
     }
 }
@@ -193,6 +204,7 @@ impl Default for EngineConfig {
             persona: String::new(),
             beam_width: 3,
             max_latency_ms: 100,
+            timeout_ms: 500,
             strategy: StrategyMode::default(),
             verbose: false,
             live_conversion: false,
@@ -206,6 +218,7 @@ impl Default for EngineConfig {
             width: WidthRules::default(),
             space: SpaceStyle::default(),
             date: DateConfig::default(),
+            romaji_table: None,
         }
     }
 }
@@ -351,12 +364,15 @@ impl LiveConversion {
 }
 
 /// Dictionary store: system, user, and future cache dictionaries
+///
+/// `Arc` allows the (expensive-to-load) merged user dictionary to be shared
+/// across per-context engine instances via a process-global cache.
 #[derive(Default)]
 pub(in crate::core) struct Dictionaries {
     /// System dictionary for yada double-array trie lookup
-    pub system: Option<Dictionary>,
+    pub system: Option<std::sync::Arc<Dictionary>>,
     /// User dictionary (merged from user_dict_paths)
-    pub user: Option<Dictionary>,
+    pub user: Option<std::sync::Arc<Dictionary>>,
 }
 
 /// Conversion model dispatch strategy based on input length

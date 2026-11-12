@@ -9,6 +9,7 @@ on:
       - 'karukan-engine/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - '.cargo/config.toml'
       - 'tests/integration/**'
       - '.github/workflows/fcitx5-integration-test.yml'
   # No `paths` filter here on purpose: a workflow skipped by path filtering
@@ -51,6 +52,7 @@ jobs:
               - 'karukan-engine/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              - '.cargo/config.toml'
               - 'tests/integration/**'
               - '.github/workflows/fcitx5-integration-test.yml'
 

@@ -707,9 +707,9 @@ fn engine_with_dict_prediction(
         ..EngineConfig::default()
     });
     engine.converters.kanji = None;
-    engine.dicts.system = Some(dict_from_json(
+    engine.dicts.system = Some(std::sync::Arc::new(dict_from_json(
         r#"[{"reading":"わせだ","candidates":[{"surface":"早稲田","score":1000.0}]}]"#,
-    ));
+    )));
     engine
 }
 
@@ -737,12 +737,12 @@ fn convert_space_excludes_dictionary_predictions() {
 #[test]
 fn convert_space_completes_pending_tail_exactly() {
     let mut engine = engine_with_dict_prediction(Convert, Predict, Convert);
-    engine.dicts.system = Some(dict_from_json(
+    engine.dicts.system = Some(std::sync::Arc::new(dict_from_json(
         r#"[
             {"reading":"にほん","candidates":[{"surface":"日本","score":1000.0}]},
             {"reading":"にほんご","candidates":[{"surface":"日本語","score":1000.0}]}
         ]"#,
-    ));
+    )));
 
     type_romaji(&mut engine, "nihon");
     engine.process_key(&press_key(Keysym::SPACE));
@@ -762,9 +762,9 @@ fn convert_space_completes_pending_tail_exactly() {
 #[test]
 fn convert_space_completes_multi_char_tail() {
     let mut engine = engine_with_dict_prediction(Convert, Predict, Convert);
-    engine.dicts.system = Some(dict_from_json(
+    engine.dicts.system = Some(std::sync::Arc::new(dict_from_json(
         r#"[{"reading":"かいしゃ","candidates":[{"surface":"会社","score":1000.0}]}]"#,
-    ));
+    )));
 
     type_romaji(&mut engine, "kaisy");
     engine.process_key(&press_key(Keysym::SPACE));
@@ -901,9 +901,9 @@ fn engine_for_suggest_window(config: EngineConfig) -> InputMethodEngine {
     cache.record("あいさつ", "挨拶");
     cache.record("あい", "藍");
     engine.learning = Some(cache);
-    engine.dicts.system = Some(dict_from_json(
+    engine.dicts.system = Some(std::sync::Arc::new(dict_from_json(
         r#"[{"reading":"わせだ","candidates":[{"surface":"早稲田","score":1000.0}]}]"#,
-    ));
+    )));
     engine
 }
 
